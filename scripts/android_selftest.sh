@@ -3,6 +3,8 @@ set -euo pipefail
 mkdir -p artifacts/android-tests
 adb install --no-incremental -r src/Uabea.Android/bin/Debug/net10.0-android36.0/android-x64/com.zaid.uabea-Signed.apk
 adb shell run-as com.zaid.uabea rm -f files/selftest.json
+# Grant notification permission on API 36 before startup to verify a real posted status.
+adb shell pm grant com.zaid.uabea android.permission.POST_NOTIFICATIONS
 adb logcat -c
 activity=$(adb shell cmd package resolve-activity --brief com.zaid.uabea | tr -d '\r' | tail -1)
 adb shell am start -W -n "$activity" --ez run_self_test true
@@ -15,6 +17,11 @@ for attempt in $(seq 1 90); do
     adb logcat -d > artifacts/android-tests/logcat.txt
     adb exec-out screencap -p > artifacts/android-tests/app-screen.png
     python -c 'import json; r=json.load(open("artifacts/android-tests/selftest.json")); print(r); assert r["passed"]'
+    adb shell dumpsys notification --noredact > artifacts/android-tests/notifications.txt
+    if ! grep -Fq "Base de clases Unity lista" artifacts/android-tests/notifications.txt; then
+      echo "Unity database completion notification was not posted" >&2
+      exit 1
+    fi
 
     # A passing engine test does not prove that the user can press the buttons.
     # Verify cold-start interaction by opening Tools and loading the sample bundle.
