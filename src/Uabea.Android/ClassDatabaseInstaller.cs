@@ -7,7 +7,7 @@ static class ClassDatabaseInstaller
 {
     const string Expected = "dcea167eb5e8d17e7aa33c933a7332e10f88642f7e6e791b0cc2a6b7f44ec247";
     // Java asset streams are synchronous. Read them on a worker, not through CopyToAsync on the UI context.
-    public static Task Ensure(AssetManager assets, string destination, CancellationToken cancel) => Task.Run(() =>
+    public static void EnsureSync(AssetManager assets, string destination, CancellationToken cancel)
     {
         if (File.Exists(destination) && StreamTools.HashFile(destination, cancel).Equals(Expected, StringComparison.OrdinalIgnoreCase)) return;
         string staging = destination + ".partial";
@@ -28,5 +28,5 @@ static class ClassDatabaseInstaller
             File.Move(staging, destination, true);
         }
         finally { File.Delete(staging); }
-    }, cancel);
+    }
 }
