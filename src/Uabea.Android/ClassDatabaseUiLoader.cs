@@ -1,5 +1,5 @@
 using System.IO.Compression;
-using System.Security.Cryptography;
+using Uabea.Core;
 
 namespace Uabea.Android;
 
@@ -16,7 +16,7 @@ public sealed class ClassDatabaseUiLoader : IDisposable
     readonly string apkPath;
     readonly string destination;
     readonly byte[] buffer = new byte[ChunkSize];
-    readonly IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    readonly ManagedSha256 hash = new();
     FileStream? existing;
     ZipArchive? apk;
     Stream? compressed;
@@ -60,7 +60,7 @@ public sealed class ClassDatabaseUiLoader : IDisposable
                 done += n; State = new("Verificando base existente", done, total);
                 return false;
             }
-            bool valid = Convert.ToHexString(hash.GetHashAndReset()).Equals(Expected, StringComparison.OrdinalIgnoreCase);
+            bool valid = hash.GetHashHexAndReset().Equals(Expected, StringComparison.OrdinalIgnoreCase);
             existing.Dispose(); existing = null;
             if (valid)
             {
@@ -79,7 +79,7 @@ public sealed class ClassDatabaseUiLoader : IDisposable
                 done += n; State = new("Extrayendo base Unity", done, total);
                 return false;
             }
-            string result = Convert.ToHexString(hash.GetHashAndReset());
+            string result = hash.GetHashHexAndReset();
             if (done != total || !result.Equals(Expected, StringComparison.OrdinalIgnoreCase))
                 throw new IOException("La base de clases empaquetada no pasó la verificación SHA-256.");
             stagingOutput!.Flush(true);
@@ -119,7 +119,6 @@ public sealed class ClassDatabaseUiLoader : IDisposable
         if (disposed) return;
         disposed = true;
         CloseStreams();
-        hash.Dispose();
         if (staging != null)
         {
             try { File.Delete(staging); } catch (IOException) { }
