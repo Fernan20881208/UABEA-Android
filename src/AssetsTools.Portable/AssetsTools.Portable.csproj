@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>AssetsTools.NET</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <NoWarn>$(NoWarn);SYSLIB0021;CS8981</NoWarn>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="../../vendor/AssetsTools.NET/**/*.cs" /></ItemGroup>
+</Project>
