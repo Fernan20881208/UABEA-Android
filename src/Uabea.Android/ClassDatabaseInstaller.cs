@@ -36,6 +36,7 @@ static class ClassDatabaseInstaller
     public static void EnsureSync(string apkPath, string destination, CancellationToken cancel,
         Action<ClassDatabaseProgress>? progress = null)
     {
+        progress?.Invoke(new ClassDatabaseProgress("Localizando base instalada", 0, 0));
         // Verify an already-extracted class database too: on later starts the
         // percentage reflects bytes hashed, not a pretend download.
         if (File.Exists(destination))
@@ -49,6 +50,7 @@ static class ClassDatabaseInstaller
             }
         }
 
+        progress?.Invoke(new ClassDatabaseProgress("Abriendo paquete APK", 0, 0));
         string staging = destination + ".partial-" + Guid.NewGuid().ToString("N");
         try
         {
@@ -57,6 +59,7 @@ static class ClassDatabaseInstaller
             {
                 var entry = apk.GetEntry("assets/classdata.tpk")
                     ?? throw new FileNotFoundException("classdata.tpk no existe dentro de la APK");
+                progress?.Invoke(new ClassDatabaseProgress("Abriendo clase Unity comprimida", 0, entry.Length));
                 using var source = entry.Open();
                 string hash = HashReading(source, entry.Length, "Extrayendo base de Unity", cancel, progress, target);
                 target.Flush(true);
