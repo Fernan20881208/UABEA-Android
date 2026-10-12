@@ -1,4 +1,4 @@
-using Android.Content.Res;
+using System.IO.Compression;
 using Uabea.Core;
 
 namespace Uabea.Android;
@@ -6,14 +6,14 @@ namespace Uabea.Android;
 static class ClassDatabaseInstaller
 {
     const string Expected = "dcea167eb5e8d17e7aa33c933a7332e10f88642f7e6e791b0cc2a6b7f44ec247";
-    // Java asset streams are synchronous. Read them on a worker, not through CopyToAsync on the UI context.
-    public static void EnsureSync(AssetManager assets, string destination, CancellationToken cancel)
+    // Read directly from the signed APK using managed streams. Android AssetManager JNI reads\n    // previously stalled during startup on the emulator. This avoids those Java stream calls.\n    public static void EnsureSync(string apkPath, string destination, CancellationToken cancel)
     {
         if (File.Exists(destination) && StreamTools.HashFile(destination, cancel).Equals(Expected, StringComparison.OrdinalIgnoreCase)) return;
         string staging = destination + ".partial";
         try
         {
-            using (var source = assets.Open("classdata.tpk"))
+            using (var apk = ZipFile.OpenRead(apkPath))
+            using (var source = (apk.GetEntry("assets/classdata.tpk") ?? throw new FileNotFoundException("classdata.tpk no existe dentro de la APK")).Open())
             using (var target = File.Create(staging))
             {
                 byte[] buffer = new byte[65536]; int count;
