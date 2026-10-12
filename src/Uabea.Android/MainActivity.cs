@@ -54,39 +54,74 @@ public sealed class MainActivity : AppCompatActivity
     SafStorage saf = null!;
     readonly int[] classes = [0, 21, 48, 200, 28, 49, 114];
 
+    int classDatabaseAttempt;
+    CancellationTokenSource? classDatabaseCancel;
+    MaterialButton? notificationPermissionButton;
+
     protected override void OnCreate(Bundle? state)
     {
         base.OnCreate(state);
-        work = Path.Combine(FilesDir!.AbsolutePath, "workspace"); Directory.CreateDirectory(work);
+        global::Android.Util.Log.Info("UabeaSelfTest", "OnCreate entered");
+        work = Path.Combine(FilesDir!.AbsolutePath, "workspace");
+        Directory.CreateDirectory(work);
         db = Path.Combine(FilesDir.AbsolutePath, "classdata.tpk");
         saf = new(this, work);
         BuildUi();
-        classNotification = new ClassDatabaseNotification(this);
-        if ((int)Build.VERSION.SdkInt >= 33 &&
-            CheckSelfPermission("android.permission.POST_NOTIFICATIONS") != Permission.Granted)
-        {
-            // Permission is optional; loading proceeds normally even when denied.
-            RequestPermissions(["android.permission.POST_NOTIFICATIONS"], PostNotificationPermissionRequest);
-        }
+        global::Android.Util.Log.Info("UabeaSelfTest", "UI created, launching class database worker");
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
-        global::Android.Util.Log.Info("UabeaSelfTest", $"Activity initialized; requested={selfTest}");
-        status.Text = "Preparando base de clases Unity en segundo plano. La interfaz sigue disponible.";
-        // Explicit dedicated thread: do not wait on AssetManager or hash I/O in OnCreate.
-        // Unlike a general Run() operation, initialization must not set busy=true:
-        // doing so made EVERY button silently ignore clicks when initialization stalled.
-        string apkPath = ApplicationInfo?.SourceDir
-            ?? throw new IOException("Android no devolvió la ruta de la APK instalada.");
+
+        // The worker MUST start before any Android notification IPC or runtime
+        // permission dialog: otherwise the screen may sit at 0% indefinitely.
+        StartClassDatabaseLoad(selfTest);
+
+        // Notifications are optional. Never request a runtime permission in the
+        // startup path. Users can enable them with the visible button.
+        if (CheckSelfPermission("android.permission.POST_NOTIFICATIONS") == Permission.Granted ||
+            (int)Build.VERSION.SdkInt < 33)
+            ActivateClassDatabaseNotifications();
+        else if (notificationPermissionButton != null)
+            notificationPermissionButton.Visibility = ViewStates.Visible;
+        global::Android.Util.Log.Info("UabeaSelfTest", "OnCreate returned from initialization");
+    }
+
+    void StartClassDatabaseLoad(bool selfTest = false)
+    {
+        classDatabaseCancel?.Cancel();
+        var cancel = new CancellationTokenSource();
+        classDatabaseCancel = cancel;
+        int attempt = ++classDatabaseAttempt;
+        classDatabaseReady = false;
+        classDatabaseError = null;
+        latestClassDatabaseProgress = null;
+        classDatabaseBar.Indeterminate = true;
+        classDatabaseLabel.Text = "Iniciando el lector de clases Unity...";
+        status.Text = "Preparando base Unity en segundo plano. La interfaz sigue disponible.";
+        global::Android.Util.Log.Info("UabeaSelfTest", $"Scheduling class database attempt {attempt}");
+
         var loader = new System.Threading.Thread(() =>
         {
             try
             {
-                global::Android.Util.Log.Info("UabeaSelfTest", "Class database worker started");
-                ClassDatabaseInstaller.EnsureSync(apkPath, db, CancellationToken.None,
-                    state => RunOnUiThread(() => DisplayClassDatabaseProgress(state)));
+                global::Android.Util.Log.Info("UabeaSelfTest", $"Worker entered attempt {attempt}");
+                string apkPath = ApplicationInfo?.SourceDir
+                    ?? throw new IOException("No se pudo resolver la ruta de la APK instalada.");
+                ClassDatabaseInstaller.EnsureSync(apkPath, db, cancel.Token, state =>
+                {
+                    global::Android.Util.Log.Info("UabeaSelfTest",
+                        $"Class data [{attempt}]: {state.Phase} {state.BytesDone}/{state.BytesTotal}");
+                    RunOnUiThread(() =>
+                    {
+                        if (attempt == classDatabaseAttempt)
+                            DisplayClassDatabaseProgress(state);
+                    });
+                });
+                cancel.Token.ThrowIfCancellationRequested();
                 global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
                 RunOnUiThread(() =>
                 {
+                    if (attempt != classDatabaseAttempt) return;
                     classDatabaseReady = true;
+                    classDatabaseBar.Indeterminate = false;
                     classDatabaseBar.Progress = 100;
                     classDatabaseLabel.Text = "Base Unity lista · 100%";
                     status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
@@ -94,45 +129,83 @@ public sealed class MainActivity : AppCompatActivity
                     if (selfTest) _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
                 });
             }
+            catch (OperationCanceledException)
+            {
+                global::Android.Util.Log.Info("UabeaSelfTest", $"Attempt {attempt} was cancelled");
+            }
             catch (Exception e)
             {
-                global::Android.Util.Log.Error("UabeaSelfTest", "Startup failed: " + e);
-                if (selfTest)
+                global::Android.Util.Log.Error("UabeaSelfTest", $"Attempt {attempt} failed: {e}");
+                if (selfTest && attempt == classDatabaseAttempt)
                 {
                     string report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = e.ToString() });
                     try { File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report); }
-                    catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Unable to write error report: " + io); }
+                    catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Error writing test report: " + io); }
                 }
                 RunOnUiThread(() =>
                 {
+                    if (attempt != classDatabaseAttempt) return;
                     classDatabaseError = e.Message;
-                    classDatabaseLabel.Text = "Error al cargar la base Unity";
+                    classDatabaseBar.Indeterminate = false;
+                    classDatabaseLabel.Text = "Error en base Unity · utiliza Reintentar";
                     status.Text = "Error al preparar classdata.tpk: " + e.Message;
                     classNotification?.Failed(e.Message);
                 });
             }
-        }) { IsBackground = true, Name = "UabeaClassDatabase" };
+            finally { cancel.Dispose(); }
+        }) { IsBackground = true, Name = "UabeaClassDatabase-" + attempt };
         loader.Start();
+        global::Android.Util.Log.Info("UabeaSelfTest", $"Worker thread launched, attempt {attempt}");
+
+        _ = Task.Delay(TimeSpan.FromSeconds(15)).ContinueWith(_ => RunOnUiThread(() =>
+        {
+            if (attempt != classDatabaseAttempt || classDatabaseReady || classDatabaseError != null) return;
+            if (latestClassDatabaseProgress is { BytesDone: > 0 }) return;
+            string phase = latestClassDatabaseProgress?.Phase ?? "el hilo de lectura todavía no respondió";
+            classDatabaseLabel.Text = "Sin avance durante 15 s · " + phase;
+            status.Text = "La preparación no avanza. Pulsa Reintentar base Unity o consulta Registro.";
+            global::Android.Util.Log.Warn("UabeaSelfTest", "No class database byte progress after 15s: " + phase);
+        }), TaskScheduler.Default);
+    }
+
+    void ActivateClassDatabaseNotifications()
+    {
+        classNotification ??= new ClassDatabaseNotification(this);
+        if (notificationPermissionButton != null)
+            notificationPermissionButton.Visibility = ViewStates.Gone;
+        if (classDatabaseReady) classNotification.Completed();
+        else if (classDatabaseError != null) classNotification.Failed(classDatabaseError);
+        else if (latestClassDatabaseProgress is { } state) classNotification.Progress(state);
+    }
+
+    void RequestClassDatabaseNotifications()
+    {
+        if ((int)Build.VERSION.SdkInt >= 33 &&
+            CheckSelfPermission("android.permission.POST_NOTIFICATIONS") != Permission.Granted)
+            RequestPermissions(["android.permission.POST_NOTIFICATIONS"], PostNotificationPermissionRequest);
+        else ActivateClassDatabaseNotifications();
     }
 
     void DisplayClassDatabaseProgress(ClassDatabaseProgress state)
     {
         if (classDatabaseReady || classDatabaseError != null) return;
         latestClassDatabaseProgress = state;
-        classDatabaseBar.Progress = state.Percent;
-        string left = (state.RemainingBytes / 1024.0).ToString("0.0");
-        classDatabaseLabel.Text = $"Base Unity: {state.Phase} · {state.Percent}% · faltan {left} KiB";
+        bool hasTotal = state.BytesTotal > 0;
+        classDatabaseBar.Indeterminate = !hasTotal;
+        if (hasTotal) classDatabaseBar.Progress = state.Percent;
+        string remaining = (state.RemainingBytes / 1024.0).ToString("0.0");
+        classDatabaseLabel.Text = hasTotal
+            ? $"Base Unity: {state.Phase} · {state.Percent}% · faltan {remaining} KiB"
+            : "Base Unity: " + state.Phase + "...";
         classNotification?.Progress(state);
     }
 
     public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
     {
         base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != PostNotificationPermissionRequest || grantResults.Length == 0 ||
-            grantResults[0] != Permission.Granted) return;
-        if (classDatabaseReady) classNotification?.Completed();
-        else if (classDatabaseError != null) classNotification?.Failed(classDatabaseError);
-        else if (latestClassDatabaseProgress is { } state) classNotification?.Progress(state);
+        if (requestCode == PostNotificationPermissionRequest &&
+            grantResults.Length > 0 && grantResults[0] == Permission.Granted)
+            ActivateClassDatabaseNotifications();
     }
 
     int Dp(int n) => (int)(n * Resources!.DisplayMetrics!.Density);
@@ -167,6 +240,9 @@ public sealed class MainActivity : AppCompatActivity
         classDatabaseBar = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
         { Max = 100, Progress = 0, Indeterminate = false };
         root.AddView(classDatabaseBar);
+        Row(root, Button("Reintentar base Unity", () => StartClassDatabaseLoad()),
+            notificationPermissionButton = Button("Activar notificaciones", RequestClassDatabaseNotifications));
+        notificationPermissionButton.Visibility = ViewStates.Gone;
         progress = new(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal) { Indeterminate = true, Visibility = ViewStates.Gone };
         root.AddView(progress);
         var cancel = new MaterialButton(this) { Text = "Cancelar operación", Visibility = ViewStates.Gone };
