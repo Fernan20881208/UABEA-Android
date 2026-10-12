@@ -43,6 +43,9 @@ public sealed class MainActivity : AppCompatActivity
     Spinner filter = null!;
     ListView list = null!;
     bool busy;
+    // A slow AssetManager read must never block OnCreate or disable the Android UI.
+    bool classDatabaseReady;
+    string? classDatabaseError;
     SafStorage saf = null!;
     readonly int[] classes = [0, 21, 48, 200, 28, 49, 114];
 
@@ -55,24 +58,42 @@ public sealed class MainActivity : AppCompatActivity
         BuildUi();
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
         global::Android.Util.Log.Info("UabeaSelfTest", $"Activity initialized; requested={selfTest}");
-        try
+        status.Text = "Preparando base de clases Unity en segundo plano. La interfaz sigue disponible.";
+        // Explicit dedicated thread: do not wait on AssetManager or hash I/O in OnCreate.
+        // Unlike a general Run() operation, initialization must not set busy=true:
+        // doing so made EVERY button silently ignore clicks when initialization stalled.
+        var assets = Assets!;
+        var loader = new System.Threading.Thread(() =>
         {
-            global::Android.Util.Log.Info("UabeaSelfTest", "Preparing class database synchronously");
-            ClassDatabaseInstaller.EnsureSync(Assets!, db, CancellationToken.None);
-            global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
-            if (selfTest)
-                _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
-        }
-        catch (Exception e)
-        {
-            global::Android.Util.Log.Error("UabeaSelfTest", "Startup failed: " + e);
-            status.Text = "Error al preparar classdata.tpk: " + e.Message;
-            if (selfTest)
+            try
             {
-                string report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = e.ToString() });
-                File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report);
+                global::Android.Util.Log.Info("UabeaSelfTest", "Class database worker started");
+                ClassDatabaseInstaller.EnsureSync(assets, db, CancellationToken.None);
+                global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
+                RunOnUiThread(() =>
+                {
+                    classDatabaseReady = true;
+                    status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
+                    if (selfTest) _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+                });
             }
-        }
+            catch (Exception e)
+            {
+                global::Android.Util.Log.Error("UabeaSelfTest", "Startup failed: " + e);
+                if (selfTest)
+                {
+                    string report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = e.ToString() });
+                    try { File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report); }
+                    catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Unable to write error report: " + io); }
+                }
+                RunOnUiThread(() =>
+                {
+                    classDatabaseError = e.Message;
+                    status.Text = "Error al preparar classdata.tpk: " + e.Message;
+                });
+            }
+        }) { IsBackground = true, Name = "UabeaClassDatabase" };
+        loader.Start();
     }
 
     int Dp(int n) => (int)(n * Resources!.DisplayMetrics!.Density);
@@ -185,6 +206,7 @@ public sealed class MainActivity : AppCompatActivity
     async Task LoadPath(string path, Uri? uri, string name, CancellationToken cancel)
     {
         status.Text = "Leyendo el contenido completo…";
+        if (!classDatabaseReady) throw new IOException("La base Unity sigue preparándose. " + (classDatabaseError ?? "Espera a ver 'Editor preparado' y vuelve a abrir."));
         var next = await Task.Run(() => UnityDocument.Open(path, work, db, cancel), cancel);
         IReadOnlyList<UnityObject> nextObjects;
         try { nextObjects = await Task.Run(() => next.ListObjects(cancel), cancel); }
@@ -241,7 +263,7 @@ public sealed class MainActivity : AppCompatActivity
 
     void SaveChoice()
     {
-        if (document == null) return;
+        if (document == null) { Message("No hay archivo abierto", "Usa Abrir o Herramientas → Abrir demostración."); return; }
         if (!document.IsBundle) { Save(BundleCompression.None); return; }
         new AlertDialog.Builder(this).SetTitle("Compresión de salida")!.SetItems(["LZ4 · recomendado", "Sin compresión", "LZMA · más lento"], (_, e) =>
             Save(e.Which switch { 1 => BundleCompression.None, 2 => BundleCompression.Lzma, _ => BundleCompression.Lz4 }))!.Show();
@@ -454,9 +476,11 @@ public sealed class MainActivity : AppCompatActivity
         {
             switch (e.Item!.ItemId)
             {
-                case 0: ConfirmDiscard(() => _ = Run(async token => { string path = await Task.Run(() => FixtureFactory.Create(Path.Combine(work, "demo"), db), token); await LoadPath(path, null, "fixture.bundle", token); })); break;
+                case 0: if (!RequireClassDatabase()) break;
+                    ConfirmDiscard(() => _ = Run(async token => { string path = await Task.Run(() => FixtureFactory.Create(Path.Combine(work, "demo"), db), token); await LoadPath(path, null, "fixture.bundle", token); })); break;
                 case 1: if (document != null) Pick(PickResource); break;
-                case 2: ConfirmDiscard(() => Prompt("Ruta absoluta para lectura root", "/sdcard/Download/archivo.bundle", path => _ = Run(async token =>
+                case 2: if (!RequireClassDatabase()) break;
+                    ConfirmDiscard(() => Prompt("Ruta absoluta para lectura root", "/sdcard/Download/archivo.bundle", path => _ = Run(async token =>
                 {
                     if (!await RootStorage.RequestAccess(token)) throw new IOException("No se concedió root.");
                     string copy = await Task.Run(() => RootStorage.Import(path, work, token), token); await LoadPath(copy, null, Path.GetFileName(path), token);
@@ -465,7 +489,8 @@ public sealed class MainActivity : AppCompatActivity
                     if (lastSaved == null) { Message("Primero guarda", "Usa Guardar como para generar y validar una copia."); break; }
                     Prompt("Ruta de destino root", "/sdcard/Download/edited.bundle", path => Confirm("Confirmar escritura protegida", $"Destino exacto:\n{path}\n\nSi existe, se creará una copia .uabea-backup antes de sustituirlo.", () => _ = Run(async token =>
                     { string backup = await Task.Run(() => RootStorage.ExportConfirmed(lastSaved!, path, token), token); status.Text = backup.Length == 0 ? "Exportación root verificada. Se creó un archivo nuevo." : "Exportación root verificada. Copia previa: " + backup; log.Add(status.Text); }))); break;
-                case 4: _ = Run(async token => { string report = await AndroidSelfTest.Run(this, work, db, token); log.Add(report); Message("Autoprueba", report); }); break;
+                case 4: if (!RequireClassDatabase()) break;
+                    _ = Run(async token => { string report = await AndroidSelfTest.Run(this, work, db, token); log.Add(report); Message("Autoprueba", report); }); break;
                 case 5:
                     AppCompatDelegate.DefaultNightMode = AppCompatDelegate.DefaultNightMode == AppCompatDelegate.ModeNightYes ? AppCompatDelegate.ModeNightNo : AppCompatDelegate.ModeNightYes;
                     break;
@@ -489,6 +514,12 @@ public sealed class MainActivity : AppCompatActivity
             }
         };
         menu.Show();
+    }
+    bool RequireClassDatabase()
+    {
+        if (classDatabaseReady) return true;
+        Message("Preparando editor Unity", classDatabaseError ?? "La base de clases todavía se está preparando. Los botones de diagnóstico y almacenamiento siguen disponibles.");
+        return false;
     }
     void Message(string title, string text) => new AlertDialog.Builder(this).SetTitle(title)!.SetMessage(text)!.SetPositiveButton("Aceptar", (_, _) => { })!.Show();
     void Confirm(string title, string text, Action confirmed) => new AlertDialog.Builder(this).SetTitle(title)!.SetMessage(text)!.SetNegativeButton("Cancelar", (_, _) => { })!.SetPositiveButton("Continuar", (_, _) => confirmed())!.Show();
