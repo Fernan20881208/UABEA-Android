@@ -7,7 +7,9 @@ namespace Uabea.Android;
 static class ClassDatabaseInstaller
 {
     const string Expected = "dcea167eb5e8d17e7aa33c933a7332e10f88642f7e6e791b0cc2a6b7f44ec247";
-    // Read directly from the signed APK using managed streams. Android AssetManager JNI reads\n    // previously stalled during startup on the emulator. This avoids those Java stream calls.\n    public static void EnsureSync(string apkPath, string destination, CancellationToken cancel)
+    // Read directly from the signed APK using managed streams.
+    // Avoids Android AssetManager JNI reads during startup.
+    public static void EnsureSync(string apkPath, string destination, CancellationToken cancel)
     {
         if (File.Exists(destination) && StreamTools.HashFile(destination, cancel).Equals(Expected, StringComparison.OrdinalIgnoreCase)) return;
         string staging = destination + ".partial-" + Guid.NewGuid().ToString("N");
