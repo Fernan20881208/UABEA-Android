@@ -14,11 +14,10 @@ static class ClassDatabaseInstaller
 {
     const string Expected = "dcea167eb5e8d17e7aa33c933a7332e10f88642f7e6e791b0cc2a6b7f44ec247";
 
-    static string HashReading(Stream source, string phase, CancellationToken cancel,
+    static string HashReading(Stream source, long total, string phase, CancellationToken cancel,
         Action<ClassDatabaseProgress>? progress, Stream? copyTo = null)
     {
         using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        long total = source.Length;
         long copied = 0;
         progress?.Invoke(new ClassDatabaseProgress(phase, 0, total));
         var buffer = new byte[16 * 1024];
@@ -42,7 +41,7 @@ static class ClassDatabaseInstaller
         if (File.Exists(destination))
         {
             using var installed = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            string existingHash = HashReading(installed, "Comprobando archivo existente", cancel, progress);
+            string existingHash = HashReading(installed, installed.Length, "Comprobando archivo existente", cancel, progress);
             if (existingHash.Equals(Expected, StringComparison.OrdinalIgnoreCase))
             {
                 progress?.Invoke(new ClassDatabaseProgress("Lista", installed.Length, installed.Length));
@@ -54,13 +53,14 @@ static class ClassDatabaseInstaller
         try
         {
             using (var apk = ZipFile.OpenRead(apkPath))
-            using (var source = (apk.GetEntry("assets/classdata.tpk")
-                ?? throw new FileNotFoundException("classdata.tpk no existe dentro de la APK")).Open())
             using (var target = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                string hash = HashReading(source, "Extrayendo base de Unity", cancel, progress, target);
+                var entry = apk.GetEntry("assets/classdata.tpk")
+                    ?? throw new FileNotFoundException("classdata.tpk no existe dentro de la APK");
+                using var source = entry.Open();
+                string hash = HashReading(source, entry.Length, "Extrayendo base de Unity", cancel, progress, target);
                 target.Flush(true);
-                progress?.Invoke(new ClassDatabaseProgress("Verificando integridad", source.Length, source.Length));
+                progress?.Invoke(new ClassDatabaseProgress("Verificando integridad", entry.Length, entry.Length));
                 if (!hash.Equals(Expected, StringComparison.OrdinalIgnoreCase))
                     throw new IOException("La base de clases empaquetada está incompleta o dañada.");
             }
