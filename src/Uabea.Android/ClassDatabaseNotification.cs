@@ -68,12 +68,21 @@ public sealed class ClassDatabaseNotification
     {
         int percent = progress.Percent;
         string remaining = (progress.RemainingBytes / 1024.0).ToString("0.0");
+        bool hasTotal = progress.BytesTotal > 0;
         Publish(builder => builder
             .SetContentTitle("Cargando clases de Unity")
-            .SetContentText($"{percent}% · faltan {remaining} KiB · {progress.Phase}")
-            .SetProgress(100, percent, false)
+            .SetContentText(hasTotal
+                ? $"{percent}% · faltan {remaining} KiB · {progress.Phase}"
+                : progress.Phase + " · esperando lectura")
+            .SetProgress(hasTotal ? 100 : 0, hasTotal ? percent : 0, !hasTotal)
             .SetOngoing(true));
     }
+
+    public void Stalled(string phase) => Publish(builder => builder
+        .SetContentTitle("La carga Unity no avanza")
+        .SetContentText("15 s sin datos · " + phase + ". Abre UABEA para reintentar.")
+        .SetProgress(0, 0, true)
+        .SetOngoing(false));
 
     public void Completed() => Publish(builder => builder
         .SetContentTitle("Base de clases Unity lista")
