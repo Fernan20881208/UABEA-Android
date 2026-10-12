@@ -1,0 +1,7 @@
+StbImageSharp - C# port of stb_image.h
+Authors: StbSharp / StbImageSharpTeam; original stb by Sean Barrett and contributors.
+Upstream license declaration: "Public Domain or MIT".
+This distribution uses the public-domain option.
+Source: https://github.com/StbSharp/StbImageSharp
+License declaration: https://github.com/StbSharp/StbImageSharp/blob/master/README.md#license
+NuGet package used: StbImageSharp 2.30.15.

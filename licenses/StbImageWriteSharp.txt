@@ -1,0 +1,6 @@
+StbImageWriteSharp - C# port of stb_image_write.h
+Authors: StbSharp / StbImageWriteSharpTeam; original stb by Sean Barrett and contributors.
+Upstream license declaration: "Public Domain".
+Source: https://github.com/StbSharp/StbImageWriteSharp
+License declaration: https://github.com/StbSharp/StbImageWriteSharp/blob/master/README.md#license
+NuGet package used: StbImageWriteSharp 1.16.7.

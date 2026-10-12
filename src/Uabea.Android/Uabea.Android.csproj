@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android36.0</TargetFramework>
+    <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <ApplicationId>com.zaid.uabea</ApplicationId>
+    <ApplicationTitle>UABEA Android</ApplicationTitle>
+    <ApplicationVersion>200</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.0-alpha</ApplicationDisplayVersion>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">android-arm64</RuntimeIdentifier>
+    <AndroidPackageFormats>apk</AndroidPackageFormats>
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidUseAssemblyStore>true</AndroidUseAssemblyStore>
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Uabea.Formats/Uabea.Formats.csproj" />
+    <ProjectReference Include="../Uabea.Storage/Uabea.Storage.csproj" />
+    <PackageReference Include="Xamarin.Google.Android.Material" Version="1.14.0.6" />
+    <AndroidAsset Include="../../data/classdata.tpk" Link="classdata.tpk" />
+    <AndroidAsset Include="../../licenses/*.txt" Link="licenses/%(Filename)%(Extension)" />
+    <Compile Include="../../tests/Uabea.Tests/FixtureFactory.cs" Link="Testing/FixtureFactory.cs" />
+  </ItemGroup>
+</Project>

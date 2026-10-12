@@ -1,0 +1,115 @@
+name: Android build and integration tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Compile and run real engine integration tests
+        run: |
+          dotnet build tests/Uabea.Tests -c Release -m:1
+          dotnet tests/Uabea.Tests/bin/Release/net10.0/Uabea.Tests.dll artifacts/tests
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Independently reopen outputs using UnityPy
+        run: |
+          python -m pip install UnityPy==1.25.4
+          python scripts/verify_unitypy.py artifacts/tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-test-results
+          path: artifacts/tests
+          if-no-files-found: error
+  apk:
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build dependencies
+        run: |
+          dotnet workload install android --skip-manifest-update
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Compile and sign standalone ARM64 debug APK
+        run: |
+          dotnet build src/Uabea.Android -c Debug -t:SignAndroidPackage -m:1 -p:RuntimeIdentifier=android-arm64 -p:AndroidSdkDirectory="$ANDROID_HOME" -p:JavaSdkDirectory="$JAVA_HOME"
+          mkdir -p artifacts/apk
+          cp src/Uabea.Android/bin/Debug/net10.0-android36.0/android-arm64/com.zaid.uabea-Signed.apk artifacts/apk/UABEA-Android-arm64-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose artifacts/apk/UABEA-Android-arm64-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 artifacts/apk/UABEA-Android-arm64-debug.apk
+          python scripts/verify_apk.py artifacts/apk/UABEA-Android-arm64-debug.apk
+          cd artifacts/apk
+          sha256sum UABEA-Android-arm64-debug.apk > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UABEA-Android-arm64-debug
+          path: artifacts/apk
+          if-no-files-found: error
+      - name: Package sources without credentials or build caches
+        run: |
+          git archive --format=zip --prefix=UABEA-Android/ -o artifacts/UABEA-Android-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UABEA-Android-source
+          path: artifacts/UABEA-Android-source.zip
+  android-saf:
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build test ABI with the same source and Android API
+        run: |
+          dotnet workload install android --skip-manifest-update
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+          dotnet build src/Uabea.Android -c Debug -t:SignAndroidPackage -m:1 -p:RuntimeIdentifier=android-x64 -p:AndroidSdkDirectory="$ANDROID_HOME" -p:JavaSdkDirectory="$JAVA_HOME"
+      - name: Run Android ContentResolver / SAF integration
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash scripts/android_selftest.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-saf-test-results
+          path: artifacts/android-tests
+          if-no-files-found: warn
