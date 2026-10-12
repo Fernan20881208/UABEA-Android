@@ -63,7 +63,7 @@ jobs:
           cp src/Uabea.Android/bin/Debug/net10.0-android36.0/android-arm64/com.zaid.uabea-Signed.apk artifacts/apk/UABEA-Android-arm64-debug.apk
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose artifacts/apk/UABEA-Android-arm64-debug.apk
           "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 artifacts/apk/UABEA-Android-arm64-debug.apk
-          python scripts/verify_apk.py artifacts/apk/UABEA-Android-arm64-debug.apk
+          python scripts/verify_apk.py artifacts/apk/UABEA-Android-arm64-debug.apk "$ANDROID_HOME/build-tools/36.0.0/aapt2"
           cd artifacts/apk
           sha256sum UABEA-Android-arm64-debug.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4

@@ -58,7 +58,7 @@ public sealed class MainActivity : AppCompatActivity
         _ = Run(async token =>
         {
             global::Android.Util.Log.Info("UabeaSelfTest", "Preparing class database");
-            if (!File.Exists(db)) { using var source = Assets!.Open("classdata.tpk"); using var target = File.Create(db); await source.CopyToAsync(target, token); }
+            await ClassDatabaseInstaller.Ensure(Assets!, db, token);
             global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
             if (selfTest)
                 await AndroidSelfTest.Run(this, work, db, token);
@@ -438,7 +438,7 @@ public sealed class MainActivity : AppCompatActivity
     void ShowTools(View anchor)
     {
         var menu = new PopupMenu(this, anchor);
-        string[] items = ["Abrir demostración", "Añadir recurso .resS", "Abrir con root", "Exportar última copia con root", "Autoprueba Android / SAF", "Cambiar tema", "Licencias y límites"];
+        string[] items = ["Abrir demostración", "Añadir recurso .resS", "Abrir con root", "Exportar última copia con root", "Autoprueba Android / SAF", "Cambiar tema", "Licencias y límites", "Almacenamiento y permisos", "Comprobar root"];
         for (int i = 0; i < items.Length; i++) menu.Menu!.Add(0, i, i, items[i]);
         menu.MenuItemClick += (_, e) =>
         {
@@ -449,12 +449,12 @@ public sealed class MainActivity : AppCompatActivity
                 case 2: ConfirmDiscard(() => Prompt("Ruta absoluta para lectura root", "/sdcard/Download/archivo.bundle", path => _ = Run(async token =>
                 {
                     if (!await RootStorage.RequestAccess(token)) throw new IOException("No se concedió root.");
-                    string copy = await RootStorage.Import(path, work, token); await LoadPath(copy, null, Path.GetFileName(path), token);
+                    string copy = await Task.Run(() => RootStorage.Import(path, work, token), token); await LoadPath(copy, null, Path.GetFileName(path), token);
                 }))); break;
                 case 3:
                     if (lastSaved == null) { Message("Primero guarda", "Usa Guardar como para generar y validar una copia."); break; }
                     Prompt("Ruta de destino root", "/sdcard/Download/edited.bundle", path => Confirm("Confirmar escritura protegida", $"Destino exacto:\n{path}\n\nSi existe, se creará una copia .uabea-backup antes de sustituirlo.", () => _ = Run(async token =>
-                    { string backup = await RootStorage.ExportConfirmed(lastSaved!, path, token); status.Text = "Exportación root completada; copia previa si existía: " + backup; }))); break;
+                    { string backup = await Task.Run(() => RootStorage.ExportConfirmed(lastSaved!, path, token), token); status.Text = backup.Length == 0 ? "Exportación root verificada. Se creó un archivo nuevo." : "Exportación root verificada. Copia previa: " + backup; log.Add(status.Text); }))); break;
                 case 4: _ = Run(async token => { string report = await AndroidSelfTest.Run(this, work, db, token); log.Add(report); Message("Autoprueba", report); }); break;
                 case 5:
                     AppCompatDelegate.DefaultNightMode = AppCompatDelegate.DefaultNightMode == AppCompatDelegate.ModeNightYes ? AppCompatDelegate.ModeNightNo : AppCompatDelegate.ModeNightYes;
@@ -464,6 +464,17 @@ public sealed class MainActivity : AppCompatActivity
                     var text = new StringBuilder("UABEA Android · port experimental con AssetsTools.NET.\nNo afiliado con Unity/nesrak1.\nLímites: archivo 2 GiB; expansión 4 GiB; edición por objeto 64 MiB; texturas 4 MP. MonoBehaviour necesita TypeTree. Importación PNG convierte a RGBA32. Sin cifrado, anticheat ni compilador ShaderLab.\n\n");
                     foreach (string name in Assets!.List("licenses") ?? []) { using var reader = new StreamReader(Assets.Open("licenses/" + name)); text.AppendLine(await reader.ReadToEndAsync(token)); }
                     Message("Licencias y limitaciones", text.ToString());
+                }); break;
+                case 7: _ = Run(async token =>
+                {
+                    string report = await Task.Run(() => StorageDiagnostics.Check(this, work, sourceUri, token), token);
+                    log.Add(report); Message("Almacenamiento y permisos", report);
+                }); break;
+                case 8: _ = Run(async token =>
+                {
+                    status.Text = "Solicitando root a KernelSU/SukiSU…";
+                    string report = await Task.Run(() => RootStorage.Diagnose(token), token);
+                    log.Add(report); Message("Diagnóstico root", report);
                 }); break;
             }
         };

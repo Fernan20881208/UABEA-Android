@@ -7,7 +7,11 @@
 - Lectura completa de UnityFS y SerializedFiles, LZ4/LZMA, reemplazos y guardado validado.
 - Editor Android nativo, Material 3, SAF, RAW/hex/diferencias, texto, propiedades y PNG.
 - Acceso root opcional aislado con confirmación y backups.
-- Fixtures propios, 12 pruebas, reapertura independiente con UnityPy y autoprueba Android SAF.
+- Fixtures propios, 18 pruebas, reapertura independiente con UnityPy y autoprueba Android SAF.
 - GitHub Actions con APK ARM64 autónoma y reportes de integración.
 
 Esta versión sustituye el enfoque del starter que solo identificaba firmas. No implica paridad con UABEA de escritorio ni compatibilidad verificada con un juego concreto.
+
+- Diagnóstico de almacenamiento y root desde la app; auditoría del manifiesto APK real.
+- Guardado root con backup verificado, conservación comprobada de permisos y contexto SELinux cuando está disponible, relectura y rechazo de enlaces.
+- Carga de base de clases fuera del hilo UI, comprobación de hash y recuperación de copias incompletas.

@@ -1,20 +1,12 @@
 using System.Text;
 using Uabea.Core;
+using Uabea.Storage;
 
 namespace Uabea.Android;
 
 /// <summary>Only explicit root actions call su. Never used by ordinary SAF operations.</summary>
 public static class RootStorage
 {
-    static string Quote(string path)
-    {
-        if (path.IndexOfAny(['\0', '\n', '\r']) >= 0) throw new ArgumentException("Ruta inválida.");
-        return "'" + path.Replace("'", "'\"'\"'") + "'";
-    }
-    static void Absolute(string path)
-    {
-        if (!path.StartsWith('/')) throw new ArgumentException("Se requiere una ruta absoluta.");
-    }
     static async Task<string> Command(string command, CancellationToken cancel)
     {
         using var process = Java.Lang.Runtime.GetRuntime()!.Exec(new[] { "su", "-c", command })!;
@@ -24,15 +16,26 @@ public static class RootStorage
         Task<string> output = reader.ReadToEndAsync(cancel), error = errors.ReadToEndAsync(cancel);
         int code = await Task.Run(process.WaitFor, cancel);
         await Task.WhenAll(output, error);
+        cancel.ThrowIfCancellationRequested();
         if (code != 0) throw new IOException("Root denegado/error: " + await error);
         return await output;
     }
     public static async Task<bool> RequestAccess(CancellationToken cancel) => (await Command("id -u", cancel)).Trim() == "0";
+    public static async Task<string> Diagnose(CancellationToken cancel)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        try
+        {
+            if (!await RequestAccess(timeout.Token)) return "Root: su no devolvió UID 0.";
+            return "Root: concedido (UID 0).\n" + await Command("id; getenforce; for tool in cat cp mv rm sha256sum cut stat ls chcon; do command -v \"$tool\" || exit 1; done", timeout.Token) +
+                "\nEste diagnóstico no escribe archivos protegidos. El acceso a cada ruta depende de su montaje y política SELinux.";
+        }
+        catch (OperationCanceledException) when (!cancel.IsCancellationRequested) { throw new IOException("La solicitud root agotó 45 segundos. Revisa KernelSU/SukiSU y vuelve a intentarlo."); }
+    }
     public static async Task<string> Import(string source, string privateDirectory, CancellationToken cancel)
     {
-        Absolute(source);
-        string destination = Path.Combine(privateDirectory, "root-" + Guid.NewGuid().ToString("N") + ".bin");
-        using var process = Java.Lang.Runtime.GetRuntime()!.Exec(new[] { "su", "-c", "test -f " + Quote(source) + " && cat " + Quote(source) })!;
+        using var process = Java.Lang.Runtime.GetRuntime()!.Exec(new[] { "su", "-c", RootCommands.Read(source) })!;
         using var registration = cancel.Register(() => process.Destroy());
         using var errors = new StreamReader(process.ErrorStream!);
         Task<string> error = errors.ReadToEndAsync(cancel);
@@ -44,24 +47,13 @@ public static class RootStorage
             if (exit != 0) throw new IOException(await error);
             return copied;
         }
-        catch { if (copied != null) File.Delete(copied); throw; }
+        catch { process.Destroy(); if (copied != null) File.Delete(copied); throw; }
     }
     public static async Task<string> ExportConfirmed(string validatedSource, string destination, CancellationToken cancel)
     {
-        Absolute(destination);
-        string backup = destination + ".uabea-backup-" + Guid.NewGuid().ToString("N");
-        string staging = destination + ".uabea-tmp-" + Guid.NewGuid().ToString("N");
         string hash = StreamTools.HashFile(validatedSource, cancel).ToLowerInvariant();
-        string src = Quote(validatedSource), dst = Quote(destination), tmp = Quote(staging), bak = Quote(backup);
-        // No network, no game process control. Backup and staging stay in the target directory.
-        string script = "set -eu\n" +
-            "test ! -L " + dst + "\n" +
-            "trap 'rm -f " + tmp.Replace("'", "'\"'\"'") + "' EXIT\n" +
-            "if test -e " + dst + "; then cp -p " + dst + " " + bak + "; cp -p " + dst + " " + tmp + "; fi\n" +
-            "cat " + src + " > " + tmp + "\n" +
-            "test \"$(sha256sum " + tmp + " | cut -d ' ' -f 1)\" = " + Quote(hash) + "\n" +
-            "mv " + tmp + " " + dst + "\n";
-        await Command(script, cancel);
-        return backup;
+        var plan = RootCommands.Export(validatedSource, destination, hash);
+        if (!await RequestAccess(cancel)) throw new IOException("No se concedió root.");
+        return await Command(plan.Script, cancel);
     }
 }

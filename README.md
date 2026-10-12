@@ -67,3 +67,5 @@ Consulta [arquitectura](docs/ARCHITECTURE.md), [pruebas](docs/TESTING.md), [comp
 Los commits exactos están en [upstream-lock.json](upstream-lock.json). `vendor/` conserva los archivos originales y avisos. Las copias de los dos ZIP aportados por el usuario se inspeccionaron, pero no se redistribuyen: el starter solo detectaba la cabecera y la distribución Ubuntu incluía códecs Linux x86-64 no utilizables como bibliotecas Android.
 
 Proyecto independiente; no está afiliado a nesrak1, Unity ni a desarrolladores de juegos. No incluye assets de juegos, credenciales o claves privadas.
+
+Permisos, diagnóstico en el teléfono y prueba root: [docs/PERMISSIONS.md](docs/PERMISSIONS.md).

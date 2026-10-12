@@ -139,6 +139,7 @@ Test("Corrupt, truncated, encrypted-looking and unsupported headers rejected", (
         Throws<UnityFormatException>(() => { using var doc = UnityDocument.Open(file, root, db); });
     }
 });
+StorageTests.Register(Test, root);
 var suite = new XElement("testsuite", new XAttribute("name", "UABEA.Android.Core"), new XAttribute("tests", results.Count),
     new XAttribute("failures", results.Count(x => x.Error != null)), results.Select(r => new XElement("testcase", new XAttribute("name", r.Name),
         r.Error == null ? null : new XElement("failure", new XAttribute("message", r.Error.Message), r.Error.ToString()))));

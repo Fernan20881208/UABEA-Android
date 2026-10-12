@@ -4,7 +4,7 @@ Las pruebas generan un **UnityFS completo**, no una cabecera ficticia. Incluye m
 
 ## Suite de motor
 
-`tests/Uabea.Tests` ejecuta 12 casos y devuelve un código distinto de cero si falla alguno:
+`tests/Uabea.Tests` ejecuta 18 casos (12 de motor y 6 de almacenamiento/root) y devuelve un código distinto de cero si falla alguno:
 
 1. Generación del fixture completo.
 2. Lectura de directorio, objetos, nombres, versiones y Container.
@@ -23,6 +23,10 @@ Resultado local inicial: **12 aprobadas, 0 fallidas**. Se detectó y corrigió u
 
 `scripts/verify_unitypy.py` abre siete salidas con **UnityPy 1.25.4**, un parser independiente. Verifica seis objetos y los textos esperados, incluyendo persistencia y conservación del segundo TextAsset. Resultado local inicial: aprobado. Esto reduce la posibilidad de que el mismo motor genere y acepte un formato erróneo.
 
+## Almacenamiento y comandos root
+
+Se añaden seis casos para importación no posicionable/límites/cancelación, detección de corrupción al releer una exportación, validación de rutas, backup y permisos POSIX con caracteres de shell, rechazo de hash incorrecto/enlaces y exportación a destino nuevo. Se ejecuta el script de exportación real mediante `sh` en Linux, sin simular un resultado de KernelSU. SELinux y concesión de root Android requieren hardware. Consulta [PERMISSIONS.md](PERMISSIONS.md).
+
 ## Android y SAF
 
 El job `android-saf` compila exactamente las mismas fuentes para x86_64 e instala la APK en un emulador Android 16 / API 36. Ejecuta dentro de Android:
@@ -33,6 +37,8 @@ El job `android-saf` compila exactamente las mismas fuentes para x86_64 e instal
 - Exportación de textura PNG y rechazo de sobrescritura de la URI original.
 
 El proveedor de prueba solo se compila en debug y está protegido por el permiso de sistema `MANAGE_DOCUMENTS`, como exige Android para DocumentsProvider. No tiene filtro de descubrimiento en el selector ni expone archivos del usuario. El resultado está en `android-saf-test-results/selftest.json`, con API, ABI y lista de comprobaciones. **Solo un job verde confirma que esa ejecución pasó.** El test automatizado no pulsa el selector gráfico de documentos ni verifica proveedores de nube; el informe lo declara explícitamente.
+
+Los primeros intentos de CI no completaron SAF: se identificó una copia de `classdata.tpk` detenida en cero bytes al iniciar. La carga ahora usa lectura síncrona del asset en un hilo de trabajo, verifica su hash y reemplaza la base privada mediante un temporal. La instalación de CI desactiva el transporte incremental. La corrección no cuenta como prueba aprobada hasta que el job lo confirme.
 
 ## APK ARM64
 
