@@ -20,6 +20,21 @@ void Throws<T>(Action action) where T : Exception
     try { action(); } catch (T) { return; } throw new Exception("Expected " + typeof(T).Name);
 }
 
+Test("Managed SHA-256 known vectors and classdata.tpk", () =>
+{
+    var sha = new ManagedSha256();
+    Check(sha.GetHashHexAndReset() == "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855", "Empty SHA-256");
+    byte[] abc = Encoding.ASCII.GetBytes("abc");
+    sha.AppendData(abc, 0, 1);
+    sha.AppendData(abc, 1, 2);
+    Check(sha.GetHashHexAndReset() == "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", "abc SHA-256");
+    byte[] classData = File.ReadAllBytes(db);
+    for (int i = 0; i < classData.Length; i += 16384)
+        sha.AppendData(classData, i, Math.Min(16384, classData.Length - i));
+    Check(sha.GetHashHexAndReset() == "DCEA167EB5E8D17E7AA33C933A7332E10F88642F7E6E791B0CC2A6B7F44EC247",
+        "Class database SHA-256 failed");
+});
+
 string fixture = "";
 Test("Generate original full UnityFS fixture", () => fixture = FixtureFactory.Create(Path.Combine(root, "fixtures"), db));
 Test("Open full bundle, directory, objects, names, versions and containers", () =>
