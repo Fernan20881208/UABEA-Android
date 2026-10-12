@@ -53,10 +53,14 @@ public sealed class MainActivity : AppCompatActivity
         db = Path.Combine(FilesDir.AbsolutePath, "classdata.tpk");
         saf = new(this, work);
         BuildUi();
+        bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
+        global::Android.Util.Log.Info("UabeaSelfTest", $"Activity initialized; requested={selfTest}");
         _ = Run(async token =>
         {
+            global::Android.Util.Log.Info("UabeaSelfTest", "Preparing class database");
             if (!File.Exists(db)) { using var source = Assets!.Open("classdata.tpk"); using var target = File.Create(db); await source.CopyToAsync(target, token); }
-            if (Intent?.GetBooleanExtra("run_self_test", false) == true)
+            global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
+            if (selfTest)
                 await AndroidSelfTest.Run(this, work, db, token);
         });
     }
@@ -164,7 +168,7 @@ public sealed class MainActivity : AppCompatActivity
         Window!.AddFlags(WindowManagerFlags.KeepScreenOn);
         try { await action(operation.Token); }
         catch (OperationCanceledException) { status.Text = "Operación cancelada. El original permanece en la copia privada."; }
-        catch (Exception e) { log.Add(e.ToString()); status.Text = "Error: " + e.Message; Message("Operación no completada", e.Message); }
+        catch (Exception e) { log.Add(e.ToString()); global::Android.Util.Log.Error("Uabea", e.ToString()); status.Text = "Error: " + e.Message; Message("Operación no completada", e.Message); }
         finally { busy = false; operation.Dispose(); operation = null; progress.Visibility = ViewStates.Gone; cancelButton.Visibility = ViewStates.Gone; Window.ClearFlags(WindowManagerFlags.KeepScreenOn); }
     }
     IProgress<string> ProgressText() => new Progress<string>(message => status.Text = message);

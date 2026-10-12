@@ -3,6 +3,7 @@ set -euo pipefail
 mkdir -p artifacts/android-tests
 adb install -r src/Uabea.Android/bin/Debug/net10.0-android36.0/android-x64/com.zaid.uabea-Signed.apk
 adb shell run-as com.zaid.uabea rm -f files/selftest.json
+adb logcat -c
 activity=$(adb shell cmd package resolve-activity --brief com.zaid.uabea | tr -d '\r' | tail -1)
 adb shell am start -W -n "$activity" --ez run_self_test true
 for attempt in $(seq 1 90); do
@@ -19,5 +20,11 @@ for attempt in $(seq 1 90); do
   sleep 2
 done
 adb logcat -d > artifacts/android-tests/logcat.txt
+adb logcat -d -s Uabea:V UabeaSelfTest:V
+adb exec-out screencap -p > artifacts/android-tests/app-screen.png
+adb exec-out run-as com.zaid.uabea cat files/selftest-progress.txt > artifacts/android-tests/progress.txt || true
+adb shell uiautomator dump /sdcard/uabea-ui.xml || true
+adb pull /sdcard/uabea-ui.xml artifacts/android-tests/ui.xml || true
+adb shell run-as com.zaid.uabea ls -l files > artifacts/android-tests/private-files.txt || true
 echo 'Android self-test did not produce a result' >&2
 exit 1

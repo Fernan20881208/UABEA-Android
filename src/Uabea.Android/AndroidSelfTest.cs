@@ -18,24 +18,34 @@ public static class AndroidSelfTest
     {
 #if DEBUG
         string reportPath = Path.Combine(context.FilesDir!.AbsolutePath, "selftest.json");
+        void Step(string value)
+        {
+            global::Android.Util.Log.Info("UabeaSelfTest", value);
+            File.WriteAllText(Path.Combine(context.FilesDir.AbsolutePath, "selftest-progress.txt"), value);
+        }
         try
         {
+            Step("Generating the complete Unity fixture");
             string sourceDir = Path.Combine(context.FilesDir!.AbsolutePath, "selftest-documents");
             Directory.CreateDirectory(sourceDir);
             string fixture = await Task.Run(() => FixtureFactory.Create(sourceDir, db), cancel);
+            Step("Creating a document through DocumentsContract");
             var source = DocumentsContract.BuildDocumentUri(TestDocumentsProvider.Authority, "fixture.bundle")!;
             var parent = DocumentsContract.BuildDocumentUri(TestDocumentsProvider.Authority, "root")!;
             var destination = DocumentsContract.CreateDocument(context.ContentResolver!, parent, "application/octet-stream", "output.bundle")!;
             var saf = new SafStorage(context, Path.Combine(work, "saf-selftest"));
+            Step("Importing through ContentResolver");
             string copy = await Task.Run(() => saf.ImportAsync(source, cancel), cancel);
             string saved = Path.Combine(work, "saf-edited-" + Guid.NewGuid() + ".bundle");
             await Task.Run(() =>
             {
+                Step("Opening, editing and rebuilding the Unity bundle");
                 using var document = UnityDocument.Open(copy, work, db, cancel);
                 var obj = document.ListObjects(cancel).Single(o => o.PathId == 1);
                 TextAssetCodec.Import(document, obj, Encoding.UTF8.GetBytes("Android SAF persisted"));
                 document.SaveAs(saved, BundleCompression.Lz4, cancel);
             }, cancel);
+            Step("Exporting and reading back through ContentResolver");
             await Task.Run(() => saf.ExportAsync(saved, destination, source, cancel), cancel);
             string reopenedCopy = await Task.Run(() => saf.ImportAsync(destination, cancel), cancel);
             await Task.Run(() =>
@@ -47,6 +57,7 @@ public static class AndroidSelfTest
                 if (TextureCodec.ExportPng(reopened, objects.Single(o => o.ClassId == 28)).Length == 0) throw new Exception("PNG decode failed");
             }, cancel);
             bool blocked = false;
+            Step("Validating original-document overwrite protection");
             try { await saf.ExportAsync(saved, source, source, cancel); } catch (IOException) { blocked = true; }
             if (!blocked) throw new Exception("Original URI overwrite was not blocked");
             var report = new { passed = true, sdk = (int)Build.VERSION.SdkInt, abi = Build.SupportedAbis?.FirstOrDefault(),
