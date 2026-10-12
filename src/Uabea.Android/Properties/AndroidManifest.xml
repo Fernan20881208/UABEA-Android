@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <application android:allowBackup="false" android:label="UABEA Android" android:supportsRtl="true" android:theme="@style/AppTheme" android:icon="@drawable/app_icon" />
 </manifest>
