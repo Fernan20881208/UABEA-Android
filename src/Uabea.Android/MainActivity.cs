@@ -135,7 +135,16 @@ public sealed class MainActivity : AppCompatActivity
                 reader.Dispose();
                 classDatabaseSession = null;
                 global::Android.Util.Log.Info("UabeaSelfTest", "CLASSDATA PASS: verified Unity base ready");
-                if (selfTest) _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+                if (selfTest)
+                {
+                    try
+                    {
+                        File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "classdata-result.json"),
+                            JsonSerializer.Serialize(new { passed = true, stage = "classdata", bytes = new FileInfo(db).Length }));
+                    }
+                    catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Classdata PASS report failed: " + io); }
+                    _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+                }
             }
             else if (!root.PostDelayed(() => AdvanceClassDatabase(attempt, selfTest), 8))
                 throw new InvalidOperationException("Android no aceptó la siguiente lectura incremental.");
@@ -157,7 +166,11 @@ public sealed class MainActivity : AppCompatActivity
         if (selfTest)
         {
             var report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = error.ToString() });
-            try { File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report); }
+            try
+            {
+                File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report);
+                File.WriteAllText(Path.Combine(FilesDir.AbsolutePath, "classdata-result.json"), report);
+            }
             catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Failed writing report: " + io); }
         }
     }
