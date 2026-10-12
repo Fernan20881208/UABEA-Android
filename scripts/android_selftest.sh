@@ -15,6 +15,44 @@ for attempt in $(seq 1 90); do
     adb logcat -d > artifacts/android-tests/logcat.txt
     adb exec-out screencap -p > artifacts/android-tests/app-screen.png
     python -c 'import json; r=json.load(open("artifacts/android-tests/selftest.json")); print(r); assert r["passed"]'
+
+    # A passing engine test does not prove that the user can press the buttons.
+    # Verify cold-start interaction by opening Tools and loading the sample bundle.
+    adb shell am force-stop com.zaid.uabea
+    adb shell am start -W -n "$activity"
+    sleep 2
+    capture_ui() {
+      adb shell uiautomator dump /sdcard/uabea-ui.xml >/dev/null
+      adb pull /sdcard/uabea-ui.xml artifacts/android-tests/ui.xml >/dev/null
+    }
+    tap_node() {
+      local point
+      point="$(python scripts/android_ui.py artifacts/android-tests/ui.xml point "$1")"
+      adb shell input tap $point
+    }
+    capture_ui
+    python scripts/android_ui.py artifacts/android-tests/ui.xml assert "Herramientas"
+    tap_node "Herramientas"
+    sleep 1
+    capture_ui
+    python scripts/android_ui.py artifacts/android-tests/ui.xml assert "Abrir demostración"
+    tap_node "Abrir demostración"
+    loaded=0
+    for ui_attempt in $(seq 1 25); do
+      sleep 2
+      capture_ui
+      if python scripts/android_ui.py artifacts/android-tests/ui.xml assert "fixture.bundle · 6 objetos"; then
+        loaded=1
+        break
+      fi
+    done
+    adb exec-out screencap -p > artifacts/android-tests/app-screen.png
+    if [ "$loaded" -ne 1 ]; then
+      adb logcat -d > artifacts/android-tests/logcat.txt
+      echo "App UI failed to open demonstration bundle" >&2
+      exit 1
+    fi
+    echo 'PASS: tapped Tools, launched demonstration, showed 6 Unity objects.'
     exit 0
   fi
   sleep 2
