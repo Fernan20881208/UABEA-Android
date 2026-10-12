@@ -55,7 +55,7 @@ public sealed class MainActivity : AppCompatActivity
     readonly int[] classes = [0, 21, 48, 200, 28, 49, 114];
 
     int classDatabaseAttempt;
-    CancellationTokenSource? classDatabaseCancel;
+    ClassDatabaseUiLoader? classDatabaseSession;
     MaterialButton? notificationPermissionButton;
 
     protected override void OnCreate(Bundle? state)
@@ -67,106 +67,107 @@ public sealed class MainActivity : AppCompatActivity
         db = Path.Combine(FilesDir.AbsolutePath, "classdata.tpk");
         saf = new(this, work);
         BuildUi();
-        global::Android.Util.Log.Info("UabeaSelfTest", "UI created, launching class database worker");
+        global::Android.Util.Log.Info("UabeaSelfTest", "UI created. Scheduling incremental class database on UI looper");
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
-
-        // The worker MUST start before any Android notification IPC or runtime
-        // permission dialog: otherwise the screen may sit at 0% indefinitely.
         StartClassDatabaseLoad(selfTest);
-
-        // Notifications are optional. Never request a runtime permission in the
-        // startup path. Users can enable them with the visible button.
         if (CheckSelfPermission("android.permission.POST_NOTIFICATIONS") == Permission.Granted ||
             (int)Build.VERSION.SdkInt < 33)
             ActivateClassDatabaseNotifications();
         else if (notificationPermissionButton != null)
             notificationPermissionButton.Visibility = ViewStates.Visible;
-        global::Android.Util.Log.Info("UabeaSelfTest", "OnCreate returned from initialization");
     }
 
     void StartClassDatabaseLoad(bool selfTest = false)
     {
-        classDatabaseCancel?.Cancel();
-        var cancel = new CancellationTokenSource();
-        classDatabaseCancel = cancel;
         int attempt = ++classDatabaseAttempt;
+        classDatabaseSession?.Dispose();
+        classDatabaseSession = null;
         classDatabaseReady = false;
         classDatabaseError = null;
         latestClassDatabaseProgress = null;
         classDatabaseBar.Indeterminate = true;
-        classDatabaseLabel.Text = "Iniciando el lector de clases Unity...";
-        status.Text = "Preparando base Unity en segundo plano. La interfaz sigue disponible.";
-        global::Android.Util.Log.Info("UabeaSelfTest", $"Scheduling class database attempt {attempt}");
-
-        var loader = new System.Threading.Thread(() =>
+        classDatabaseLabel.Text = "Iniciando lector Unity (sin hilos adicionales)...";
+        status.Text = "Preparando base Unity por bloques. La interfaz sigue disponible.";
+        global::Android.Util.Log.Info("UabeaSelfTest", $"UI loader scheduled, attempt {attempt}");
+        try
         {
-            try
-            {
-                global::Android.Util.Log.Info("UabeaSelfTest", $"Worker entered attempt {attempt}");
-                string apkPath = ApplicationInfo?.SourceDir
-                    ?? throw new IOException("No se pudo resolver la ruta de la APK instalada.");
-                ClassDatabaseInstaller.EnsureSync(apkPath, db, cancel.Token, state =>
-                {
-                    global::Android.Util.Log.Info("UabeaSelfTest",
-                        $"Class data [{attempt}]: {state.Phase} {state.BytesDone}/{state.BytesTotal}");
-                    RunOnUiThread(() =>
-                    {
-                        if (attempt == classDatabaseAttempt)
-                            DisplayClassDatabaseProgress(state);
-                    });
-                });
-                cancel.Token.ThrowIfCancellationRequested();
-                global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
-                RunOnUiThread(() =>
-                {
-                    if (attempt != classDatabaseAttempt) return;
-                    classDatabaseReady = true;
-                    classDatabaseBar.Indeterminate = false;
-                    classDatabaseBar.Progress = 100;
-                    classDatabaseLabel.Text = "Base Unity lista · 100%";
-                    status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
-                    classNotification?.Completed();
-                    if (selfTest) _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
-                });
-            }
-            catch (OperationCanceledException)
-            {
-                global::Android.Util.Log.Info("UabeaSelfTest", $"Attempt {attempt} was cancelled");
-            }
-            catch (Exception e)
-            {
-                global::Android.Util.Log.Error("UabeaSelfTest", $"Attempt {attempt} failed: {e}");
-                if (selfTest && attempt == classDatabaseAttempt)
-                {
-                    string report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = e.ToString() });
-                    try { File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report); }
-                    catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Error writing test report: " + io); }
-                }
-                RunOnUiThread(() =>
-                {
-                    if (attempt != classDatabaseAttempt) return;
-                    classDatabaseError = e.Message;
-                    classDatabaseBar.Indeterminate = false;
-                    classDatabaseLabel.Text = "Error en base Unity · utiliza Reintentar";
-                    status.Text = "Error al preparar classdata.tpk: " + e.Message;
-                    classNotification?.Failed(e.Message);
-                });
-            }
-            finally { cancel.Dispose(); }
-        }) { IsBackground = true, Name = "UabeaClassDatabase-" + attempt };
-        loader.Start();
-        global::Android.Util.Log.Info("UabeaSelfTest", $"Worker thread launched, attempt {attempt}");
+            string path = ApplicationInfo?.SourceDir
+                ?? throw new IOException("No se encontró la APK instalada.");
+            classDatabaseSession = new ClassDatabaseUiLoader(path, db);
+            if (!root.PostDelayed(() => AdvanceClassDatabase(attempt, selfTest), 30))
+                throw new InvalidOperationException("El bucle de eventos Android rechazó iniciar el lector.");
+        }
+        catch (Exception e) { FailClassDatabase(attempt, e, selfTest); }
 
-        _ = Task.Delay(TimeSpan.FromSeconds(15)).ContinueWith(_ => RunOnUiThread(() =>
+        // This warning runs on the SAME UI looper. If it executes, the app is
+        // still responsive; there is no ThreadPool or Task.Delay involved.
+        root.PostDelayed(() =>
         {
             if (attempt != classDatabaseAttempt || classDatabaseReady || classDatabaseError != null) return;
             if (latestClassDatabaseProgress is { BytesDone: > 0 }) return;
-            string phase = latestClassDatabaseProgress?.Phase ?? "el hilo de lectura todavía no respondió";
+            string phase = latestClassDatabaseProgress?.Phase ?? "no se ha ejecutado la lectura";
             classDatabaseLabel.Text = "Sin avance durante 15 s · " + phase;
-            status.Text = "La preparación no avanza. Pulsa Reintentar base Unity o consulta Registro.";
-            global::Android.Util.Log.Warn("UabeaSelfTest", "No class database byte progress after 15s: " + phase);
+            status.Text = "Pulsa Reintentar base Unity. Revisa Registro para el último estado.";
+            global::Android.Util.Log.Warn("UabeaSelfTest", "UI loader has no byte progress: " + phase);
             classNotification?.Stalled(phase);
-        }), TaskScheduler.Default);
+        }, 15000);
+    }
+
+    void AdvanceClassDatabase(int attempt, bool selfTest)
+    {
+        if (attempt != classDatabaseAttempt) return;
+        try
+        {
+            var reader = classDatabaseSession ?? throw new IOException("No existe la sesión de carga.");
+            bool completed = reader.Step();
+            var state = reader.State;
+            global::Android.Util.Log.Info("UabeaSelfTest",
+                $"UI STEP [{attempt}] {state.Phase} {state.BytesDone}/{state.BytesTotal}");
+            DisplayClassDatabaseProgress(state);
+            if (completed)
+            {
+                classDatabaseReady = true;
+                classDatabaseBar.Indeterminate = false;
+                classDatabaseBar.Progress = 100;
+                classDatabaseLabel.Text = "Base Unity lista · 100%";
+                status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
+                classNotification?.Completed();
+                reader.Dispose();
+                classDatabaseSession = null;
+                global::Android.Util.Log.Info("UabeaSelfTest", "CLASSDATA PASS: verified Unity base ready");
+                if (selfTest) _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+            }
+            else if (!root.PostDelayed(() => AdvanceClassDatabase(attempt, selfTest), 8))
+                throw new InvalidOperationException("Android no aceptó la siguiente lectura incremental.");
+        }
+        catch (Exception e) { FailClassDatabase(attempt, e, selfTest); }
+    }
+
+    void FailClassDatabase(int attempt, Exception error, bool selfTest)
+    {
+        if (attempt != classDatabaseAttempt) return;
+        global::Android.Util.Log.Error("UabeaSelfTest", $"UI loader failed {attempt}: {error}");
+        classDatabaseError = error.Message;
+        classDatabaseBar.Indeterminate = false;
+        classDatabaseLabel.Text = "Error al preparar base Unity · pulsa Reintentar";
+        status.Text = error.Message;
+        classNotification?.Failed(error.Message);
+        classDatabaseSession?.Dispose();
+        classDatabaseSession = null;
+        if (selfTest)
+        {
+            var report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = error.ToString() });
+            try { File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report); }
+            catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Failed writing report: " + io); }
+        }
+    }
+
+    protected override void OnDestroy()
+    {
+        ++classDatabaseAttempt;
+        classDatabaseSession?.Dispose();
+        classDatabaseSession = null;
+        base.OnDestroy();
     }
 
     void ActivateClassDatabaseNotifications()
