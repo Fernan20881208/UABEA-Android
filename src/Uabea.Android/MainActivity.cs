@@ -55,14 +55,24 @@ public sealed class MainActivity : AppCompatActivity
         BuildUi();
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
         global::Android.Util.Log.Info("UabeaSelfTest", $"Activity initialized; requested={selfTest}");
-        _ = Run(async token =>
+        try
         {
-            global::Android.Util.Log.Info("UabeaSelfTest", "Preparing class database");
-            await ClassDatabaseInstaller.Ensure(Assets!, db, token);
+            global::Android.Util.Log.Info("UabeaSelfTest", "Preparing class database synchronously");
+            ClassDatabaseInstaller.EnsureSync(Assets!, db, CancellationToken.None);
             global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
             if (selfTest)
-                await AndroidSelfTest.Run(this, work, db, token);
-        });
+                _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+        }
+        catch (Exception e)
+        {
+            global::Android.Util.Log.Error("UabeaSelfTest", "Startup failed: " + e);
+            status.Text = "Error al preparar classdata.tpk: " + e.Message;
+            if (selfTest)
+            {
+                string report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = e.ToString() });
+                File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report);
+            }
+        }
     }
 
     int Dp(int n) => (int)(n * Resources!.DisplayMetrics!.Density);
