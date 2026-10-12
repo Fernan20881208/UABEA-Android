@@ -165,6 +165,7 @@ public sealed class MainActivity : AppCompatActivity
             classDatabaseLabel.Text = "Sin avance durante 15 s · " + phase;
             status.Text = "La preparación no avanza. Pulsa Reintentar base Unity o consulta Registro.";
             global::Android.Util.Log.Warn("UabeaSelfTest", "No class database byte progress after 15s: " + phase);
+            classNotification?.Stalled(phase);
         }), TaskScheduler.Default);
     }
 
