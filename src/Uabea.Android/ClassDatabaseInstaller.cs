@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using Uabea.Core;
 
 namespace Uabea.Android;
@@ -9,9 +10,10 @@ static class ClassDatabaseInstaller
     // Read directly from the signed APK using managed streams. Android AssetManager JNI reads\n    // previously stalled during startup on the emulator. This avoids those Java stream calls.\n    public static void EnsureSync(string apkPath, string destination, CancellationToken cancel)
     {
         if (File.Exists(destination) && StreamTools.HashFile(destination, cancel).Equals(Expected, StringComparison.OrdinalIgnoreCase)) return;
-        string staging = destination + ".partial";
+        string staging = destination + ".partial-" + Guid.NewGuid().ToString("N");
         try
         {
+            using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using (var apk = ZipFile.OpenRead(apkPath))
             using (var source = (apk.GetEntry("assets/classdata.tpk") ?? throw new FileNotFoundException("classdata.tpk no existe dentro de la APK")).Open())
             using (var target = File.Create(staging))
@@ -19,11 +21,15 @@ static class ClassDatabaseInstaller
                 byte[] buffer = new byte[65536]; int count;
                 while ((count = source.Read(buffer, 0, buffer.Length)) > 0)
                 {
-                    cancel.ThrowIfCancellationRequested(); target.Write(buffer, 0, count);
+                    cancel.ThrowIfCancellationRequested();
+                    target.Write(buffer, 0, count);
+                    checksum.AppendData(buffer, 0, count);
                 }
                 target.Flush(true);
             }
-            if (!StreamTools.HashFile(staging, cancel).Equals(Expected, StringComparison.OrdinalIgnoreCase))
+            // Do not reopen the temporary file for hashing: Android/.NET can still hold an
+            // exclusive FileStream share lock immediately after close (observed launch crash).
+            if (!Convert.ToHexString(checksum.GetHashAndReset()).Equals(Expected, StringComparison.OrdinalIgnoreCase))
                 throw new IOException("La base de clases empaquetada está incompleta o dañada.");
             File.Move(staging, destination, true);
         }
