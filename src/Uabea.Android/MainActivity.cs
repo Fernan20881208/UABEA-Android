@@ -62,13 +62,14 @@ public sealed class MainActivity : AppCompatActivity
         // Explicit dedicated thread: do not wait on AssetManager or hash I/O in OnCreate.
         // Unlike a general Run() operation, initialization must not set busy=true:
         // doing so made EVERY button silently ignore clicks when initialization stalled.
-        var assets = Assets!;
+        string apkPath = ApplicationInfo?.SourceDir
+            ?? throw new IOException("Android no devolvió la ruta de la APK instalada.");
         var loader = new System.Threading.Thread(() =>
         {
             try
             {
                 global::Android.Util.Log.Info("UabeaSelfTest", "Class database worker started");
-                ClassDatabaseInstaller.EnsureSync(assets, db, CancellationToken.None);
+                ClassDatabaseInstaller.EnsureSync(apkPath, db, CancellationToken.None);
                 global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
                 RunOnUiThread(() =>
                 {
