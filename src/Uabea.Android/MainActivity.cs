@@ -46,6 +46,11 @@ public sealed class MainActivity : AppCompatActivity
     // A slow AssetManager read must never block OnCreate or disable the Android UI.
     bool classDatabaseReady;
     string? classDatabaseError;
+    ClassDatabaseProgress? latestClassDatabaseProgress;
+    ClassDatabaseNotification? classNotification;
+    ProgressBar classDatabaseBar = null!;
+    TextView classDatabaseLabel = null!;
+    const int PostNotificationPermissionRequest = 711;
     SafStorage saf = null!;
     readonly int[] classes = [0, 21, 48, 200, 28, 49, 114];
 
@@ -56,6 +61,13 @@ public sealed class MainActivity : AppCompatActivity
         db = Path.Combine(FilesDir.AbsolutePath, "classdata.tpk");
         saf = new(this, work);
         BuildUi();
+        classNotification = new ClassDatabaseNotification(this);
+        if ((int)Build.VERSION.SdkInt >= 33 &&
+            CheckSelfPermission("android.permission.POST_NOTIFICATIONS") != Permission.Granted)
+        {
+            // Permission is optional; loading proceeds normally even when denied.
+            RequestPermissions(["android.permission.POST_NOTIFICATIONS"], PostNotificationPermissionRequest);
+        }
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
         global::Android.Util.Log.Info("UabeaSelfTest", $"Activity initialized; requested={selfTest}");
         status.Text = "Preparando base de clases Unity en segundo plano. La interfaz sigue disponible.";
@@ -69,12 +81,16 @@ public sealed class MainActivity : AppCompatActivity
             try
             {
                 global::Android.Util.Log.Info("UabeaSelfTest", "Class database worker started");
-                ClassDatabaseInstaller.EnsureSync(apkPath, db, CancellationToken.None);
+                ClassDatabaseInstaller.EnsureSync(apkPath, db, CancellationToken.None,
+                    state => RunOnUiThread(() => DisplayClassDatabaseProgress(state)));
                 global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
                 RunOnUiThread(() =>
                 {
                     classDatabaseReady = true;
+                    classDatabaseBar.Progress = 100;
+                    classDatabaseLabel.Text = "Base Unity lista · 100%";
                     status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
+                    classNotification?.Completed();
                     if (selfTest) _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
                 });
             }
@@ -90,11 +106,33 @@ public sealed class MainActivity : AppCompatActivity
                 RunOnUiThread(() =>
                 {
                     classDatabaseError = e.Message;
+                    classDatabaseLabel.Text = "Error al cargar la base Unity";
                     status.Text = "Error al preparar classdata.tpk: " + e.Message;
+                    classNotification?.Failed(e.Message);
                 });
             }
         }) { IsBackground = true, Name = "UabeaClassDatabase" };
         loader.Start();
+    }
+
+    void DisplayClassDatabaseProgress(ClassDatabaseProgress state)
+    {
+        if (classDatabaseReady || classDatabaseError != null) return;
+        latestClassDatabaseProgress = state;
+        classDatabaseBar.Progress = state.Percent;
+        string left = (state.RemainingBytes / 1024.0).ToString("0.0");
+        classDatabaseLabel.Text = $"Base Unity: {state.Phase} · {state.Percent}% · faltan {left} KiB";
+        classNotification?.Progress(state);
+    }
+
+    public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
+    {
+        base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != PostNotificationPermissionRequest || grantResults.Length == 0 ||
+            grantResults[0] != Permission.Granted) return;
+        if (classDatabaseReady) classNotification?.Completed();
+        else if (classDatabaseError != null) classNotification?.Failed(classDatabaseError);
+        else if (latestClassDatabaseProgress is { } state) classNotification?.Progress(state);
     }
 
     int Dp(int n) => (int)(n * Resources!.DisplayMetrics!.Density);
@@ -124,6 +162,11 @@ public sealed class MainActivity : AppCompatActivity
         tools.Click += (_, _) => { if (!busy) ShowTools(tools); };
         Row(root, Button("Abrir", () => ConfirmDiscard(() => Pick(PickOpen))), Button("Guardar como", SaveChoice), tools);
         status = Text("Abre un bundle, un .assets o la demostración del menú."); root.AddView(status);
+        classDatabaseLabel = Text("Base Unity: iniciando · 0%", 12);
+        root.AddView(classDatabaseLabel);
+        classDatabaseBar = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
+        { Max = 100, Progress = 0, Indeterminate = false };
+        root.AddView(classDatabaseBar);
         progress = new(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal) { Indeterminate = true, Visibility = ViewStates.Gone };
         root.AddView(progress);
         var cancel = new MaterialButton(this) { Text = "Cancelar operación", Visibility = ViewStates.Gone };
