@@ -25,10 +25,16 @@ public static class AndroidSelfTest
         }
         try
         {
+            Step("Checking managed and Android background worker startup");
+            await WorkerProbe.Run(context.FilesDir!.AbsolutePath);
             Step("Generating the complete Unity fixture");
             string sourceDir = Path.Combine(context.FilesDir!.AbsolutePath, "selftest-documents");
             Directory.CreateDirectory(sourceDir);
-            string fixture = await Task.Run(() => FixtureFactory.Create(sourceDir, db), cancel);
+            string fixture = await Task.Run(() =>
+            {
+                Step("Fixture worker entered");
+                return FixtureFactory.Create(sourceDir, db);
+            }, cancel);
             Step("Creating a document through DocumentsContract");
             var source = DocumentsContract.BuildDocumentUri(TestDocumentsProvider.Authority, "fixture.bundle")!;
             var parent = DocumentsContract.BuildDocumentUri(TestDocumentsProvider.Authority, "root")!;
@@ -64,14 +70,14 @@ public static class AndroidSelfTest
                 tests = new[] { "ContentResolver import", "AssetsTools objects", "TextAsset edit", "LZ4 save", "ContentResolver export", "Read-back SHA256", "Reopen changed object", "Texture PNG", "Original URI overwrite rejection" },
                 picker_ui_tested = false, root_tested = false };
             string json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
-            await File.WriteAllTextAsync(reportPath, json, cancel);
+            File.WriteAllText(reportPath, json);
             global::Android.Util.Log.Info("UabeaSelfTest", "PASS " + json);
             return json;
         }
         catch (Exception e)
         {
             string json = JsonSerializer.Serialize(new { passed = false, error = e.ToString() });
-            await File.WriteAllTextAsync(reportPath, json, CancellationToken.None);
+            File.WriteAllText(reportPath, json);
             global::Android.Util.Log.Error("UabeaSelfTest", "FAIL " + e);
             throw;
         }

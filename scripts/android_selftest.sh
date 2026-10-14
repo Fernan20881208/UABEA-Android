@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p artifacts/android-tests
+collect_diagnostics() {
+  adb logcat -d > artifacts/android-tests/logcat.txt || true
+  adb exec-out run-as com.zaid.uabea cat files/worker-probe.json > artifacts/android-tests/worker-probe.json 2>/dev/null || true
+  adb logcat -d -s Uabea:V UabeaSelfTest:V AndroidRuntime:V mono:V monodroid:V monodroid-assembly:V monodroid-debug:V || true
+  grep -Ei 'exception|fatal|abort|deadlock|thread.*fail|denied|debugger|runtime.*error' artifacts/android-tests/logcat.txt | tail -100 || true
+}
+trap collect_diagnostics EXIT
 adb install --no-incremental -r src/Uabea.Android/bin/Debug/net10.0-android36.0/android-x64/com.zaid.uabea-Signed.apk
 adb shell run-as com.zaid.uabea rm -f files/selftest.json files/classdata-result.json
 # Grant notification permission on API 36 before startup to verify a real posted status.
