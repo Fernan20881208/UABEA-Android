@@ -5,11 +5,14 @@ collect_diagnostics() {
   adb logcat -d > artifacts/android-tests/logcat.txt || true
   adb exec-out run-as com.zaid.uabea cat files/worker-probe.json > artifacts/android-tests/worker-probe.json 2>/dev/null || true
   adb logcat -d -s Uabea:V UabeaSelfTest:V AndroidRuntime:V mono:V monodroid:V monodroid-assembly:V monodroid-debug:V || true
-  grep -Ei 'exception|fatal|abort|deadlock|thread.*fail|denied|debugger|runtime.*error' artifacts/android-tests/logcat.txt | tail -100 || true
+  app_pid=$(adb shell pidof com.zaid.uabea | tr -d '\r')
+  if [ -n "$app_pid" ]; then
+    grep " $app_pid " artifacts/android-tests/logcat.txt | tail -100 || true
+  fi
 }
 trap collect_diagnostics EXIT
 adb install --no-incremental -r src/Uabea.Android/bin/Debug/net10.0-android36.0/android-x64/com.zaid.uabea-Signed.apk
-adb shell run-as com.zaid.uabea rm -f files/selftest.json files/classdata-result.json
+adb shell run-as com.zaid.uabea rm -f files/selftest.json files/classdata-result.json files/worker-probe.json
 # Grant notification permission on API 36 before startup to verify a real posted status.
 adb shell pm grant com.zaid.uabea android.permission.POST_NOTIFICATIONS
 adb logcat -c
@@ -36,6 +39,12 @@ if [ "$classdata_complete" -ne 1 ]; then
   exit 1
 fi
 for attempt in $(seq 1 90); do
+  adb exec-out run-as com.zaid.uabea cat files/worker-probe.json > artifacts/android-tests/worker-pending.txt 2>/dev/null || true
+  if python -c 'import json; r=json.load(open("artifacts/android-tests/worker-pending.txt")); assert r.get("passed") is False' 2>/dev/null; then
+    cat artifacts/android-tests/worker-pending.txt
+    echo 'Android background worker probe failed' >&2
+    exit 1
+  fi
   # exec-out may return zero even when remote cat reports ENOENT on stdout.
   # Wait for a complete report; never mistake transport success for test success.
   adb exec-out run-as com.zaid.uabea cat files/selftest.json > artifacts/android-tests/report-pending.txt 2>/dev/null || true

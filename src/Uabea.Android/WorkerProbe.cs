@@ -14,10 +14,10 @@ static class WorkerProbe
         long started = SystemClock.ElapsedRealtime();
         void Enter(string name)
             => global::Android.Util.Log.Info("UabeaSelfTest", "WORKER ENTER: " + name);
-        _ = Task.Run(() => { Enter("ThreadPool"); Interlocked.Exchange(ref pool, 1); });
-        new System.Threading.Thread(() => { Enter("ManagedThread"); Interlocked.Exchange(ref managed, 1); })
+        _ = Task.Run(() => { Interlocked.Exchange(ref pool, 1); Enter("ThreadPool"); });
+        new System.Threading.Thread(() => { Interlocked.Exchange(ref managed, 1); Enter("ManagedThread"); })
             { IsBackground = true, Name = "UabeaManagedProbe" }.Start();
-        new Java.Lang.Thread(() => { Enter("JavaThread"); Interlocked.Exchange(ref java, 1); }, "UabeaJavaProbe").Start();
+        new Java.Lang.Thread(() => { Interlocked.Exchange(ref java, 1); Enter("JavaThread"); }, "UabeaJavaProbe").Start();
         void Poll()
         {
             bool passed = Volatile.Read(ref pool) == 1 && Volatile.Read(ref managed) == 1 && Volatile.Read(ref java) == 1;

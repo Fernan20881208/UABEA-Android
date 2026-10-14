@@ -5,12 +5,12 @@
     <OutputType>Exe</OutputType>
     <ApplicationId>com.zaid.uabea</ApplicationId>
     <ApplicationTitle>UABEA Android</ApplicationTitle>
-    <ApplicationVersion>200</ApplicationVersion>
-    <ApplicationDisplayVersion>0.2.0-alpha</ApplicationDisplayVersion>
+    <ApplicationVersion>201</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.1-alpha</ApplicationDisplayVersion>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">android-arm64</RuntimeIdentifier>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
-    <AndroidUseAssemblyStore>true</AndroidUseAssemblyStore>
+    <!-- Keep the SDK default: Debug uses individual embedded assemblies. -->
     <RunAOTCompilation>false</RunAOTCompilation>
     <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>

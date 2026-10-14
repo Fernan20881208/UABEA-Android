@@ -67,6 +67,7 @@ public sealed class MainActivity : AppCompatActivity
         db = Path.Combine(FilesDir.AbsolutePath, "classdata.tpk");
         saf = new(this, work);
         BuildUi();
+        log.Add($"UABEA Android 0.2.1-alpha · Android {(int)Build.VERSION.SdkInt} · {string.Join(", ", Build.SupportedAbis ?? [])}");
         global::Android.Util.Log.Info("UabeaSelfTest", "UI created. Scheduling incremental class database on UI looper");
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
         StartClassDatabaseLoad(selfTest);
@@ -132,6 +133,7 @@ public sealed class MainActivity : AppCompatActivity
                 classDatabaseLabel.Text = "Base Unity lista · 100%";
                 status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
                 classNotification?.Completed();
+                log.Add("Base Unity lista: verificación SHA-256 correcta.");
                 reader.Dispose();
                 classDatabaseSession = null;
                 global::Android.Util.Log.Info("UabeaSelfTest", "CLASSDATA PASS: verified Unity base ready");
@@ -157,6 +159,7 @@ public sealed class MainActivity : AppCompatActivity
         if (attempt != classDatabaseAttempt) return;
         global::Android.Util.Log.Error("UabeaSelfTest", $"UI loader failed {attempt}: {error}");
         classDatabaseError = error.Message;
+        log.Add("Error de base Unity: " + error);
         classDatabaseBar.Indeterminate = false;
         classDatabaseLabel.Text = "Error al preparar base Unity · pulsa Reintentar";
         status.Text = error.Message;
@@ -245,7 +248,7 @@ public sealed class MainActivity : AppCompatActivity
         root = new(this) { Orientation = Orientation.Vertical };
         root.SetPadding(Dp(16), Dp(32), Dp(16), Dp(24));
         root.AddView(Text("UABEA Android", 26));
-        summary = Text("Editor Unity · 0.2.0 alpha", 13); root.AddView(summary);
+        summary = Text("Editor Unity · 0.2.1 alpha", 13); root.AddView(summary);
         var tools = Button("Herramientas", () => { });
         tools.Click += (_, _) => { if (!busy) ShowTools(tools); };
         Row(root, Button("Abrir", () => ConfirmDiscard(() => Pick(PickOpen))), Button("Guardar como", SaveChoice), tools);
@@ -599,8 +602,29 @@ public sealed class MainActivity : AppCompatActivity
     }
     void ShowLogs()
     {
-        content.RemoveAllViews(); content.AddView(Button("← Explorador", ShowExplorer));
-        var scroll = new ScrollView(this); var label = Text(string.Join("\n\n", (document?.Logs ?? []).Concat(log)), 12); label.SetTextIsSelectable(true); scroll.AddView(label); content.AddView(scroll);
+        content.RemoveAllViews();
+        Row(content, Button("← Explorador", ShowExplorer), Button("Exportar registro", () =>
+        {
+            try
+            {
+                string path = Path.Combine(work, "diagnostic-" + Guid.NewGuid().ToString("N") + ".txt");
+                File.WriteAllText(path, DiagnosticText());
+                ExportPicker(path, "UABEA-diagnostico.txt", "text/plain");
+            }
+            catch (Exception e) { Message("No se pudo preparar el registro", e.Message); }
+        }));
+        var scroll = new ScrollView(this); var label = Text(DiagnosticText(), 12); label.SetTextIsSelectable(true); scroll.AddView(label); content.AddView(scroll);
+    }
+    string DiagnosticText()
+    {
+        var text = new StringBuilder(string.Join("\n\n", (document?.Logs ?? []).Concat(log)));
+        foreach (string name in new[] { "worker-probe.json", "selftest-progress.txt", "selftest.json" })
+        {
+            string path = Path.Combine(FilesDir!.AbsolutePath, name);
+            if (File.Exists(path) && new FileInfo(path).Length < 65536)
+                text.AppendLine("\n\n" + name + "\n" + File.ReadAllText(path));
+        }
+        return text.ToString();
     }
     void ShowTools(View anchor)
     {
