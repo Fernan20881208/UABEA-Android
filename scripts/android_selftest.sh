@@ -1,12 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p artifacts/android-tests
+collect_diagnostics() {
+  adb logcat -d > artifacts/android-tests/logcat.txt || true
+  adb exec-out run-as com.zaid.uabea cat files/worker-probe.json > artifacts/android-tests/worker-probe.json 2>/dev/null || true
+  adb logcat -d -s Uabea:V UabeaSelfTest:V AndroidRuntime:V mono:V monodroid:V monodroid-assembly:V monodroid-debug:V || true
+  app_pid=$(adb shell pidof com.zaid.uabea | tr -d '\r')
+  if [ -n "$app_pid" ]; then
+    grep " $app_pid " artifacts/android-tests/logcat.txt | tail -100 || true
+  fi
+}
+trap collect_diagnostics EXIT
 adb install --no-incremental -r src/Uabea.Android/bin/Debug/net10.0-android36.0/android-x64/com.zaid.uabea-Signed.apk
-adb shell run-as com.zaid.uabea rm -f files/selftest.json
+adb shell run-as com.zaid.uabea rm -f files/selftest.json files/classdata-result.json files/worker-probe.json
+# Grant notification permission on API 36 before startup to verify a real posted status.
+adb shell pm grant com.zaid.uabea android.permission.POST_NOTIFICATIONS
 adb logcat -c
 activity=$(adb shell cmd package resolve-activity --brief com.zaid.uabea | tr -d '\r' | tail -1)
 adb shell am start -W -n "$activity" --ez run_self_test true
+# Strict first-stage test: require that classdata has loaded and its SHA-256
+# was verified, before starting the full engine round-trip validation.
+classdata_complete=0
+for stage_attempt in $(seq 1 35); do
+  adb exec-out run-as com.zaid.uabea cat files/classdata-result.json > artifacts/android-tests/classdata-pending.txt 2>/dev/null || true
+  if python -c 'import json; r=json.load(open("artifacts/android-tests/classdata-pending.txt")); assert isinstance(r.get("passed"), bool)' 2>/dev/null; then
+    mv artifacts/android-tests/classdata-pending.txt artifacts/android-tests/classdata-result.json
+    python -c 'import json; r=json.load(open("artifacts/android-tests/classdata-result.json")); print("CLASSDATA:",r); assert r["passed"]'
+    classdata_complete=1
+    break
+  fi
+  sleep 2
+done
+if [ "$classdata_complete" -ne 1 ]; then
+  adb logcat -d > artifacts/android-tests/logcat.txt
+  adb logcat -d -s UabeaSelfTest:V Uabea:V
+  adb exec-out screencap -p > artifacts/android-tests/app-screen.png
+  echo "Unity class database did not complete its incremental UI loop" >&2
+  exit 1
+fi
 for attempt in $(seq 1 90); do
+  adb exec-out run-as com.zaid.uabea cat files/worker-probe.json > artifacts/android-tests/worker-pending.txt 2>/dev/null || true
+  if python -c 'import json; r=json.load(open("artifacts/android-tests/worker-pending.txt")); assert r.get("passed") is False' 2>/dev/null; then
+    cat artifacts/android-tests/worker-pending.txt
+    echo 'Android background worker probe failed' >&2
+    exit 1
+  fi
   # exec-out may return zero even when remote cat reports ENOENT on stdout.
   # Wait for a complete report; never mistake transport success for test success.
   adb exec-out run-as com.zaid.uabea cat files/selftest.json > artifacts/android-tests/report-pending.txt 2>/dev/null || true
@@ -15,6 +53,11 @@ for attempt in $(seq 1 90); do
     adb logcat -d > artifacts/android-tests/logcat.txt
     adb exec-out screencap -p > artifacts/android-tests/app-screen.png
     python -c 'import json; r=json.load(open("artifacts/android-tests/selftest.json")); print(r); assert r["passed"]'
+    adb shell dumpsys notification --noredact > artifacts/android-tests/notifications.txt
+    if ! grep -Fq "Base de clases Unity lista" artifacts/android-tests/notifications.txt; then
+      echo "Unity database completion notification was not posted" >&2
+      exit 1
+    fi
 
     # A passing engine test does not prove that the user can press the buttons.
     # Verify cold-start interaction by opening Tools and loading the sample bundle.

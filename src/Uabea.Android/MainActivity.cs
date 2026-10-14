@@ -43,36 +43,187 @@ public sealed class MainActivity : AppCompatActivity
     Spinner filter = null!;
     ListView list = null!;
     bool busy;
+    // A slow AssetManager read must never block OnCreate or disable the Android UI.
+    bool classDatabaseReady;
+    string? classDatabaseError;
+    ClassDatabaseProgress? latestClassDatabaseProgress;
+    ClassDatabaseNotification? classNotification;
+    ProgressBar classDatabaseBar = null!;
+    TextView classDatabaseLabel = null!;
+    const int PostNotificationPermissionRequest = 711;
     SafStorage saf = null!;
     readonly int[] classes = [0, 21, 48, 200, 28, 49, 114];
+
+    int classDatabaseAttempt;
+    ClassDatabaseUiLoader? classDatabaseSession;
+    MaterialButton? notificationPermissionButton;
 
     protected override void OnCreate(Bundle? state)
     {
         base.OnCreate(state);
-        work = Path.Combine(FilesDir!.AbsolutePath, "workspace"); Directory.CreateDirectory(work);
+        global::Android.Util.Log.Info("UabeaSelfTest", "OnCreate entered");
+        work = Path.Combine(FilesDir!.AbsolutePath, "workspace");
+        Directory.CreateDirectory(work);
         db = Path.Combine(FilesDir.AbsolutePath, "classdata.tpk");
         saf = new(this, work);
         BuildUi();
+        log.Add($"UABEA Android 0.2.1-alpha · Android {(int)Build.VERSION.SdkInt} · {string.Join(", ", Build.SupportedAbis ?? [])}");
+        global::Android.Util.Log.Info("UabeaSelfTest", "UI created. Scheduling incremental class database on UI looper");
         bool selfTest = Intent?.GetBooleanExtra("run_self_test", false) == true;
-        global::Android.Util.Log.Info("UabeaSelfTest", $"Activity initialized; requested={selfTest}");
+        StartClassDatabaseLoad(selfTest);
+        if (CheckSelfPermission("android.permission.POST_NOTIFICATIONS") == Permission.Granted ||
+            (int)Build.VERSION.SdkInt < 33)
+            ActivateClassDatabaseNotifications();
+        else if (notificationPermissionButton != null)
+            notificationPermissionButton.Visibility = ViewStates.Visible;
+    }
+
+    void StartClassDatabaseLoad(bool selfTest = false)
+    {
+        int attempt = ++classDatabaseAttempt;
+        classDatabaseSession?.Dispose();
+        classDatabaseSession = null;
+        classDatabaseReady = false;
+        classDatabaseError = null;
+        latestClassDatabaseProgress = null;
+        classDatabaseBar.Indeterminate = true;
+        classDatabaseLabel.Text = "Iniciando lector Unity (sin hilos adicionales)...";
+        status.Text = "Preparando base Unity por bloques. La interfaz sigue disponible.";
+        global::Android.Util.Log.Info("UabeaSelfTest", $"UI loader scheduled, attempt {attempt}");
         try
         {
-            global::Android.Util.Log.Info("UabeaSelfTest", "Preparing class database synchronously");
-            ClassDatabaseInstaller.EnsureSync(Assets!, db, CancellationToken.None);
-            global::Android.Util.Log.Info("UabeaSelfTest", $"Class database ready: {new FileInfo(db).Length} bytes");
-            if (selfTest)
-                _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+            string path = ApplicationInfo?.SourceDir
+                ?? throw new IOException("No se encontró la APK instalada.");
+            classDatabaseSession = new ClassDatabaseUiLoader(path, db);
+            if (!root.PostDelayed(() => AdvanceClassDatabase(attempt, selfTest), 30))
+                throw new InvalidOperationException("El bucle de eventos Android rechazó iniciar el lector.");
         }
-        catch (Exception e)
+        catch (Exception e) { FailClassDatabase(attempt, e, selfTest); }
+
+        // This warning runs on the SAME UI looper. If it executes, the app is
+        // still responsive; there is no ThreadPool or Task.Delay involved.
+        root.PostDelayed(() =>
         {
-            global::Android.Util.Log.Error("UabeaSelfTest", "Startup failed: " + e);
-            status.Text = "Error al preparar classdata.tpk: " + e.Message;
-            if (selfTest)
+            if (attempt != classDatabaseAttempt || classDatabaseReady || classDatabaseError != null) return;
+            if (latestClassDatabaseProgress is { BytesDone: > 0 }) return;
+            string phase = latestClassDatabaseProgress?.Phase ?? "no se ha ejecutado la lectura";
+            classDatabaseLabel.Text = "Sin avance durante 15 s · " + phase;
+            status.Text = "Pulsa Reintentar base Unity. Revisa Registro para el último estado.";
+            global::Android.Util.Log.Warn("UabeaSelfTest", "UI loader has no byte progress: " + phase);
+            classNotification?.Stalled(phase);
+        }, 15000);
+    }
+
+    void AdvanceClassDatabase(int attempt, bool selfTest)
+    {
+        if (attempt != classDatabaseAttempt) return;
+        try
+        {
+            var reader = classDatabaseSession ?? throw new IOException("No existe la sesión de carga.");
+            bool completed = reader.Step();
+            var state = reader.State;
+            global::Android.Util.Log.Info("UabeaSelfTest",
+                $"UI STEP [{attempt}] {state.Phase} {state.BytesDone}/{state.BytesTotal}");
+            DisplayClassDatabaseProgress(state);
+            if (completed)
             {
-                string report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = e.ToString() });
-                File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report);
+                classDatabaseReady = true;
+                classDatabaseBar.Indeterminate = false;
+                classDatabaseBar.Progress = 100;
+                classDatabaseLabel.Text = "Base Unity lista · 100%";
+                status.Text = "Editor preparado. Abre un bundle o Herramientas → Abrir demostración.";
+                classNotification?.Completed();
+                log.Add("Base Unity lista: verificación SHA-256 correcta.");
+                reader.Dispose();
+                classDatabaseSession = null;
+                global::Android.Util.Log.Info("UabeaSelfTest", "CLASSDATA PASS: verified Unity base ready");
+                if (selfTest)
+                {
+                    try
+                    {
+                        File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "classdata-result.json"),
+                            JsonSerializer.Serialize(new { passed = true, stage = "classdata", bytes = new FileInfo(db).Length }));
+                    }
+                    catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Classdata PASS report failed: " + io); }
+                    _ = Run(token => AndroidSelfTest.Run(this, work, db, token));
+                }
             }
+            else if (!root.PostDelayed(() => AdvanceClassDatabase(attempt, selfTest), 8))
+                throw new InvalidOperationException("Android no aceptó la siguiente lectura incremental.");
         }
+        catch (Exception e) { FailClassDatabase(attempt, e, selfTest); }
+    }
+
+    void FailClassDatabase(int attempt, Exception error, bool selfTest)
+    {
+        if (attempt != classDatabaseAttempt) return;
+        global::Android.Util.Log.Error("UabeaSelfTest", $"UI loader failed {attempt}: {error}");
+        classDatabaseError = error.Message;
+        log.Add("Error de base Unity: " + error);
+        classDatabaseBar.Indeterminate = false;
+        classDatabaseLabel.Text = "Error al preparar base Unity · pulsa Reintentar";
+        status.Text = error.Message;
+        classNotification?.Failed(error.Message);
+        classDatabaseSession?.Dispose();
+        classDatabaseSession = null;
+        if (selfTest)
+        {
+            var report = JsonSerializer.Serialize(new { passed = false, stage = "classdata", error = error.ToString() });
+            try
+            {
+                File.WriteAllText(Path.Combine(FilesDir!.AbsolutePath, "selftest.json"), report);
+                File.WriteAllText(Path.Combine(FilesDir.AbsolutePath, "classdata-result.json"), report);
+            }
+            catch (Exception io) { global::Android.Util.Log.Error("UabeaSelfTest", "Failed writing report: " + io); }
+        }
+    }
+
+    protected override void OnDestroy()
+    {
+        ++classDatabaseAttempt;
+        classDatabaseSession?.Dispose();
+        classDatabaseSession = null;
+        base.OnDestroy();
+    }
+
+    void ActivateClassDatabaseNotifications()
+    {
+        classNotification ??= new ClassDatabaseNotification(this);
+        if (notificationPermissionButton != null)
+            notificationPermissionButton.Visibility = ViewStates.Gone;
+        if (classDatabaseReady) classNotification.Completed();
+        else if (classDatabaseError != null) classNotification.Failed(classDatabaseError);
+        else if (latestClassDatabaseProgress is { } state) classNotification.Progress(state);
+    }
+
+    void RequestClassDatabaseNotifications()
+    {
+        if ((int)Build.VERSION.SdkInt >= 33 &&
+            CheckSelfPermission("android.permission.POST_NOTIFICATIONS") != Permission.Granted)
+            RequestPermissions(["android.permission.POST_NOTIFICATIONS"], PostNotificationPermissionRequest);
+        else ActivateClassDatabaseNotifications();
+    }
+
+    void DisplayClassDatabaseProgress(ClassDatabaseProgress state)
+    {
+        if (classDatabaseReady || classDatabaseError != null) return;
+        latestClassDatabaseProgress = state;
+        bool hasTotal = state.BytesTotal > 0;
+        classDatabaseBar.Indeterminate = !hasTotal;
+        if (hasTotal) classDatabaseBar.Progress = state.Percent;
+        string remaining = (state.RemainingBytes / 1024.0).ToString("0.0");
+        classDatabaseLabel.Text = hasTotal
+            ? $"Base Unity: {state.Phase} · {state.Percent}% · faltan {remaining} KiB"
+            : "Base Unity: " + state.Phase + "...";
+        classNotification?.Progress(state);
+    }
+
+    public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
+    {
+        base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PostNotificationPermissionRequest &&
+            grantResults.Length > 0 && grantResults[0] == Permission.Granted)
+            ActivateClassDatabaseNotifications();
     }
 
     int Dp(int n) => (int)(n * Resources!.DisplayMetrics!.Density);
@@ -97,11 +248,19 @@ public sealed class MainActivity : AppCompatActivity
         root = new(this) { Orientation = Orientation.Vertical };
         root.SetPadding(Dp(16), Dp(32), Dp(16), Dp(24));
         root.AddView(Text("UABEA Android", 26));
-        summary = Text("Editor Unity · 0.2.0 alpha", 13); root.AddView(summary);
+        summary = Text("Editor Unity · 0.2.1 alpha", 13); root.AddView(summary);
         var tools = Button("Herramientas", () => { });
         tools.Click += (_, _) => { if (!busy) ShowTools(tools); };
         Row(root, Button("Abrir", () => ConfirmDiscard(() => Pick(PickOpen))), Button("Guardar como", SaveChoice), tools);
         status = Text("Abre un bundle, un .assets o la demostración del menú."); root.AddView(status);
+        classDatabaseLabel = Text("Base Unity: iniciando · 0%", 12);
+        root.AddView(classDatabaseLabel);
+        classDatabaseBar = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
+        { Max = 100, Progress = 0, Indeterminate = false };
+        root.AddView(classDatabaseBar);
+        Row(root, Button("Reintentar base Unity", () => StartClassDatabaseLoad()),
+            notificationPermissionButton = Button("Activar notificaciones", RequestClassDatabaseNotifications));
+        notificationPermissionButton.Visibility = ViewStates.Gone;
         progress = new(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal) { Indeterminate = true, Visibility = ViewStates.Gone };
         root.AddView(progress);
         var cancel = new MaterialButton(this) { Text = "Cancelar operación", Visibility = ViewStates.Gone };
@@ -185,6 +344,7 @@ public sealed class MainActivity : AppCompatActivity
     async Task LoadPath(string path, Uri? uri, string name, CancellationToken cancel)
     {
         status.Text = "Leyendo el contenido completo…";
+        if (!classDatabaseReady) throw new IOException("La base Unity sigue preparándose. " + (classDatabaseError ?? "Espera a ver 'Editor preparado' y vuelve a abrir."));
         var next = await Task.Run(() => UnityDocument.Open(path, work, db, cancel), cancel);
         IReadOnlyList<UnityObject> nextObjects;
         try { nextObjects = await Task.Run(() => next.ListObjects(cancel), cancel); }
@@ -241,7 +401,7 @@ public sealed class MainActivity : AppCompatActivity
 
     void SaveChoice()
     {
-        if (document == null) return;
+        if (document == null) { Message("No hay archivo abierto", "Usa Abrir o Herramientas → Abrir demostración."); return; }
         if (!document.IsBundle) { Save(BundleCompression.None); return; }
         new AlertDialog.Builder(this).SetTitle("Compresión de salida")!.SetItems(["LZ4 · recomendado", "Sin compresión", "LZMA · más lento"], (_, e) =>
             Save(e.Which switch { 1 => BundleCompression.None, 2 => BundleCompression.Lzma, _ => BundleCompression.Lz4 }))!.Show();
@@ -442,8 +602,29 @@ public sealed class MainActivity : AppCompatActivity
     }
     void ShowLogs()
     {
-        content.RemoveAllViews(); content.AddView(Button("← Explorador", ShowExplorer));
-        var scroll = new ScrollView(this); var label = Text(string.Join("\n\n", (document?.Logs ?? []).Concat(log)), 12); label.SetTextIsSelectable(true); scroll.AddView(label); content.AddView(scroll);
+        content.RemoveAllViews();
+        Row(content, Button("← Explorador", ShowExplorer), Button("Exportar registro", () =>
+        {
+            try
+            {
+                string path = Path.Combine(work, "diagnostic-" + Guid.NewGuid().ToString("N") + ".txt");
+                File.WriteAllText(path, DiagnosticText());
+                ExportPicker(path, "UABEA-diagnostico.txt", "text/plain");
+            }
+            catch (Exception e) { Message("No se pudo preparar el registro", e.Message); }
+        }));
+        var scroll = new ScrollView(this); var label = Text(DiagnosticText(), 12); label.SetTextIsSelectable(true); scroll.AddView(label); content.AddView(scroll);
+    }
+    string DiagnosticText()
+    {
+        var text = new StringBuilder(string.Join("\n\n", (document?.Logs ?? []).Concat(log)));
+        foreach (string name in new[] { "worker-probe.json", "selftest-progress.txt", "selftest.json" })
+        {
+            string path = Path.Combine(FilesDir!.AbsolutePath, name);
+            if (File.Exists(path) && new FileInfo(path).Length < 65536)
+                text.AppendLine("\n\n" + name + "\n" + File.ReadAllText(path));
+        }
+        return text.ToString();
     }
     void ShowTools(View anchor)
     {
@@ -454,9 +635,11 @@ public sealed class MainActivity : AppCompatActivity
         {
             switch (e.Item!.ItemId)
             {
-                case 0: ConfirmDiscard(() => _ = Run(async token => { string path = await Task.Run(() => FixtureFactory.Create(Path.Combine(work, "demo"), db), token); await LoadPath(path, null, "fixture.bundle", token); })); break;
+                case 0: if (!RequireClassDatabase()) break;
+                    ConfirmDiscard(() => _ = Run(async token => { string path = await Task.Run(() => FixtureFactory.Create(Path.Combine(work, "demo"), db), token); await LoadPath(path, null, "fixture.bundle", token); })); break;
                 case 1: if (document != null) Pick(PickResource); break;
-                case 2: ConfirmDiscard(() => Prompt("Ruta absoluta para lectura root", "/sdcard/Download/archivo.bundle", path => _ = Run(async token =>
+                case 2: if (!RequireClassDatabase()) break;
+                    ConfirmDiscard(() => Prompt("Ruta absoluta para lectura root", "/sdcard/Download/archivo.bundle", path => _ = Run(async token =>
                 {
                     if (!await RootStorage.RequestAccess(token)) throw new IOException("No se concedió root.");
                     string copy = await Task.Run(() => RootStorage.Import(path, work, token), token); await LoadPath(copy, null, Path.GetFileName(path), token);
@@ -465,7 +648,8 @@ public sealed class MainActivity : AppCompatActivity
                     if (lastSaved == null) { Message("Primero guarda", "Usa Guardar como para generar y validar una copia."); break; }
                     Prompt("Ruta de destino root", "/sdcard/Download/edited.bundle", path => Confirm("Confirmar escritura protegida", $"Destino exacto:\n{path}\n\nSi existe, se creará una copia .uabea-backup antes de sustituirlo.", () => _ = Run(async token =>
                     { string backup = await Task.Run(() => RootStorage.ExportConfirmed(lastSaved!, path, token), token); status.Text = backup.Length == 0 ? "Exportación root verificada. Se creó un archivo nuevo." : "Exportación root verificada. Copia previa: " + backup; log.Add(status.Text); }))); break;
-                case 4: _ = Run(async token => { string report = await AndroidSelfTest.Run(this, work, db, token); log.Add(report); Message("Autoprueba", report); }); break;
+                case 4: if (!RequireClassDatabase()) break;
+                    _ = Run(async token => { string report = await AndroidSelfTest.Run(this, work, db, token); log.Add(report); Message("Autoprueba", report); }); break;
                 case 5:
                     AppCompatDelegate.DefaultNightMode = AppCompatDelegate.DefaultNightMode == AppCompatDelegate.ModeNightYes ? AppCompatDelegate.ModeNightNo : AppCompatDelegate.ModeNightYes;
                     break;
@@ -489,6 +673,12 @@ public sealed class MainActivity : AppCompatActivity
             }
         };
         menu.Show();
+    }
+    bool RequireClassDatabase()
+    {
+        if (classDatabaseReady) return true;
+        Message("Preparando editor Unity", classDatabaseError ?? "La base de clases todavía se está preparando. Los botones de diagnóstico y almacenamiento siguen disponibles.");
+        return false;
     }
     void Message(string title, string text) => new AlertDialog.Builder(this).SetTitle(title)!.SetMessage(text)!.SetPositiveButton("Aceptar", (_, _) => { })!.Show();
     void Confirm(string title, string text, Action confirmed) => new AlertDialog.Builder(this).SetTitle(title)!.SetMessage(text)!.SetNegativeButton("Cancelar", (_, _) => { })!.SetPositiveButton("Continuar", (_, _) => confirmed())!.Show();
